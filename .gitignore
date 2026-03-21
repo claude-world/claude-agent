@@ -1,0 +1,25 @@
+# User secrets (channel tokens, local overrides)
+.claude/settings.local.json
+.claude/channels/
+
+# Runtime output (research reports, drafts, brainstorms)
+workspace/*
+!workspace/.gitkeep
+
+# Auto-generated memory content (templates are tracked, runtime content is not)
+memory/archive/*
+!memory/archive/.gitkeep
+memory/learned-today.md
+memory/contacts.md
+
+# App control panel
+app/node_modules/
+app/dist/
+app/data/
+app/release/
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+._*

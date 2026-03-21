@@ -1,0 +1,44 @@
+{
+  "mcpServers": {
+    "trend-pulse": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "trend-pulse[mcp]",
+        "trend-pulse-server"
+      ]
+    },
+    "claude-101": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "claude-101[mcp]",
+        "claude-101-server"
+      ]
+    },
+    "cf-browser": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "cf-browser-mcp",
+        "cf-browser-mcp"
+      ],
+      "env": {
+        "CF_ACCOUNT_ID": "${CF_ACCOUNT_ID}",
+        "CF_API_TOKEN": "${CF_API_TOKEN}"
+      }
+    },
+    "notebooklm": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "notebooklm-skill",
+        "notebooklm-mcp"
+      ]
+    }
+  }
+}

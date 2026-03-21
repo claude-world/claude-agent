@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-gray-900 text-gray-100 antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+      sans-serif;
+  }
+
+  code, pre, kbd, samp {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Menlo', monospace;
+  }
+}
+
+@layer components {
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-gray-400 hover:text-gray-100 hover:bg-gray-700 transition-colors duration-150 cursor-pointer text-sm font-medium;
+  }
+
+  .sidebar-link.active {
+    @apply text-blue-400 bg-gray-700;
+  }
+
+  .card {
+    @apply bg-gray-800 border border-gray-700 rounded-xl p-4;
+  }
+
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-700 hover:bg-gray-600 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150;
+  }
+
+  .btn-danger {
+    @apply bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150;
+  }
+
+  .input-base {
+    @apply bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-gray-100 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  .badge-green {
+    @apply badge bg-green-900 text-green-300;
+  }
+
+  .badge-blue {
+    @apply badge bg-blue-900 text-blue-300;
+  }
+
+  .badge-yellow {
+    @apply badge bg-yellow-900 text-yellow-300;
+  }
+
+  .badge-purple {
+    @apply badge bg-purple-900 text-purple-300;
+  }
+
+  .badge-orange {
+    @apply badge bg-orange-900 text-orange-300;
+  }
+
+  .badge-gray {
+    @apply badge bg-gray-700 text-gray-300;
+  }
+}
+
+/* Electron: make interactive elements clickable within the drag region */
+button, select, input, textarea, a, [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Markdown prose overrides for dark theme */
+.prose-dark {
+  @apply text-gray-200;
+}
+
+.prose-dark h1, .prose-dark h2, .prose-dark h3 {
+  @apply text-gray-100;
+}
+
+.prose-dark a {
+  @apply text-blue-400 hover:text-blue-300;
+}
+
+.prose-dark code {
+  @apply bg-gray-700 text-gray-200 px-1 py-0.5 rounded text-xs;
+}
+
+.prose-dark pre {
+  @apply bg-gray-900 border border-gray-700 rounded-lg p-3 overflow-x-auto text-sm;
+}
+
+.prose-dark pre code {
+  @apply bg-transparent p-0;
+}
+
+.prose-dark blockquote {
+  @apply border-l-4 border-gray-600 pl-4 text-gray-400 italic;
+}
+
+.prose-dark ul {
+  @apply list-disc list-inside;
+}
+
+.prose-dark ol {
+  @apply list-decimal list-inside;
+}
+
+.prose-dark hr {
+  @apply border-gray-700;
+}
+
+.prose-dark table {
+  @apply w-full text-sm;
+}
+
+.prose-dark th {
+  @apply text-left p-2 border-b border-gray-600 text-gray-300;
+}
+
+.prose-dark td {
+  @apply p-2 border-b border-gray-700;
+}
