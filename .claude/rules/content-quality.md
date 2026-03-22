@@ -49,6 +49,11 @@ Content that triggers reduced distribution — **must reject if any apply**:
    - Older content → use evergreen framing, not news framing
 3. **No AI filler** — Remove phrases like "in today's rapidly evolving landscape", "it's worth noting that", "dive deep into".
 4. **Platform-aware** — Threads: 500 chars, text-first. Instagram: visual-first. Respect each platform's constraints.
+5. **Link Comment (CRITICAL)** — Threads/IG reduce distribution for posts with URLs in the body. Always:
+   - Remove URLs from the post body
+   - Collect all source URLs into a separate "link comment"
+   - Post the link comment as the first reply to the main post
+   - Format: `Sources:\n- [Title] URL\n- [Title] URL`
 5. **Original content only** — Create Threads-specific content. Never cross-post identical text from IG/FB. Reposts get reduced reach vs original creators.
 6. **Text + visuals** — Posts combining text with images/video significantly outperform text-only. Always prefer visual-enriched posts.
 7. **Humor & authenticity** — Humor performs exceptionally well on Threads. Write in authentic voice with personality. Relatable > polished.

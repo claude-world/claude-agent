@@ -5,7 +5,7 @@ import {
   Message,
   TextChannel,
 } from "discord.js";
-import { AgentSession } from "./agent.ts";
+import { AgentSession, CliSession, createSession, type CliType } from "./agent.ts";
 import type { store as StoreType } from "./db.ts";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -37,8 +37,8 @@ export class DiscordBridge {
   private store: typeof StoreType;
   // Map: discordUserId → sessionId
   private userToSession = new Map<string, string>();
-  // Map: sessionId → AgentSession
-  private agentSessions = new Map<string, AgentSession>();
+  // Map: sessionId → AgentSession | CliSession
+  private agentSessions = new Map<string, AgentSession | CliSession>();
 
   constructor(store: typeof StoreType) {
     this.store = store;
@@ -80,14 +80,19 @@ export class DiscordBridge {
       const userId = message.author.id;
       const username = message.author.username;
 
-      // Access control
-      if (allowedUsers && allowedUsers.length > 0) {
-        const allowed =
-          allowedUsers.includes(userId) || allowedUsers.includes(username);
-        if (!allowed) {
-          await this.safeReply(message, "Access denied.");
-          return;
-        }
+      // Access control — always check
+      if (!allowedUsers || allowedUsers.length === 0) {
+        await this.safeReply(message, `Welcome! Before you can use this bot, the admin needs to add your ID.\n\nYour user\\_id: \`${userId}\`\nUsername: ${username}\n\nGo to Claude Agent → Channels → Edit → paste this user\\_id and save.`);
+        console.log(`[Discord] No allowlist. New user: user_id=${userId} username=${username}`);
+        return;
+      }
+
+      const allowed =
+        allowedUsers.includes(userId) || allowedUsers.includes(username);
+      if (!allowed) {
+        await this.safeReply(message, `Access denied.\n\nYour user\\_id: \`${userId}\`\nUsername: ${username}\n\nAsk the admin to add your user\\_id or username to the allowed users list.`);
+        console.log(`[Discord] Blocked: user_id=${userId} username=${username}`);
+        return;
       }
 
       // Strip the bot mention prefix from the text
@@ -112,45 +117,98 @@ export class DiscordBridge {
         // non-fatal
       }
 
-      // Get or create an in-memory AgentSession
+      // Get or create an in-memory session (respects default_cli setting)
       let agentSession = this.agentSessions.get(sessionId);
       if (!agentSession) {
-        agentSession = new AgentSession(sessionId, AGENT_ROOT);
+        const defaultCli = (this.store.getSetting("default_cli") || "claude") as CliType;
+        console.log(`[Discord] Creating session for ${userId} with CLI: ${defaultCli}`);
+        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli);
         this.agentSessions.set(sessionId, agentSession);
       }
 
       // Store user message in DB
       this.store.addMessage(sessionId, { role: "user", content: text });
 
-      agentSession.sendMessage(text);
+      // CliSession (codex/gemini/opencode): one-shot execute
+      if (agentSession instanceof CliSession) {
+        try {
+          if (message.channel instanceof TextChannel || isDM) {
+            await (message.channel as any).sendTyping();
+          }
+          const output = await agentSession.execute(text);
+          const reply = output || "(no response)";
+          this.store.addMessage(sessionId, { role: "assistant", content: reply });
+          for (const part of splitMessage(reply)) {
+            await this.safeReply(message, part);
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          await this.safeReply(message, `Error: ${errorMsg}`);
+          this.agentSessions.delete(sessionId);
+        }
+        return;
+      }
+
+      // AgentSession (claude): streaming
+      (agentSession as AgentSession).sendMessage(text);
 
       let fullResponse = "";
+      let pendingText = "";
       let typingInterval: ReturnType<typeof setInterval> | null = null;
+      let lastSendTime = 0;
+      let firstReply = true;
+      const FLUSH_INTERVAL = 2000;
+
+      const flushPending = async () => {
+        if (pendingText.trim()) {
+          const toSend = pendingText.trim();
+          pendingText = "";
+          const parts = splitMessage(toSend);
+          for (const part of parts) {
+            if (firstReply) {
+              await this.safeReply(message, part);
+              firstReply = false;
+            } else {
+              try { await message.channel.send(part); } catch {}
+            }
+          }
+          lastSendTime = Date.now();
+        }
+      };
 
       try {
-        // Keep typing indicator alive during long processing
         typingInterval = setInterval(async () => {
           try {
             if (message.channel instanceof TextChannel || isDM) {
               await (message.channel as any).sendTyping();
             }
-          } catch {
-            // non-fatal
+          } catch {}
+          if (pendingText.trim() && Date.now() - lastSendTime > FLUSH_INTERVAL) {
+            await flushPending();
           }
-        }, 8000);
+        }, 3000);
 
         for await (const sdkMsg of agentSession.getOutputStream()) {
           if (sdkMsg.type === "assistant") {
             const content = sdkMsg.message?.content;
             if (!content) continue;
 
+            let newText = "";
             if (typeof content === "string") {
-              fullResponse += content;
+              newText = content;
             } else if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === "text" && block.text) {
-                  fullResponse += block.text;
+                  newText += block.text;
                 }
+              }
+            }
+
+            if (newText) {
+              fullResponse += newText;
+              pendingText += newText;
+              if (pendingText.includes("\n\n") || pendingText.length > 500) {
+                await flushPending();
               }
             }
           } else if (sdkMsg.type === "result") {
@@ -159,31 +217,21 @@ export class DiscordBridge {
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error(
-          `[Discord] Agent error for user ${userId}:`,
-          errorMsg
-        );
-        fullResponse = `An error occurred: ${errorMsg}`;
-
-        // On error, recreate the agent session next time
+        console.error(`[Discord] Agent error for user ${userId}:`, errorMsg);
+        pendingText = `Error: ${errorMsg}`;
         this.agentSessions.delete(sessionId);
       } finally {
         if (typingInterval) clearInterval(typingInterval);
       }
 
-      // Store assistant response
-      if (fullResponse) {
-        this.store.addMessage(sessionId, {
-          role: "assistant",
-          content: fullResponse,
-        });
+      await flushPending();
+
+      if (!fullResponse.trim()) {
+        await this.safeReply(message, "(no response)");
       }
 
-      // Reply (split if needed)
-      const replyText = fullResponse || "(no response)";
-      const parts = splitMessage(replyText);
-      for (const part of parts) {
-        await this.safeReply(message, part);
+      if (fullResponse) {
+        this.store.addMessage(sessionId, { role: "assistant", content: fullResponse });
       }
     });
 
@@ -202,9 +250,11 @@ export class DiscordBridge {
 
   stop() {
     for (const session of this.agentSessions.values()) {
-      session.interrupt();
+      if (session instanceof AgentSession) session.interrupt();
+      else if (session instanceof CliSession) session.abort();
     }
     this.agentSessions.clear();
+    this.userToSession.clear();
 
     if (this.client) {
       this.client.destroy();

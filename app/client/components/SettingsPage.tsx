@@ -68,7 +68,10 @@ export default function SettingsPage({ onLocaleChange }: SettingsPageProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [projectPath, setProjectPath] = useState('');
+  const [projectStatus, setProjectStatus] = useState<{ has_claude_md: boolean; has_skills: boolean; has_memory: boolean } | null>(null);
+  const [initPath, setInitPath] = useState('');
+  const [initStatus, setInitStatus] = useState('');
 
   useEffect(() => {
     fetch('/api/settings')
@@ -79,7 +82,14 @@ export default function SettingsPage({ onLocaleChange }: SettingsPageProps) {
       })
       .catch(() => {});
 
-    // Load MCP config from .mcp.json
+    // Load project info
+    fetch('/api/project')
+      .then(r => r.json())
+      .then(data => {
+        setProjectPath(data.agent_root || '');
+        setProjectStatus({ has_claude_md: data.has_claude_md, has_skills: data.has_skills, has_memory: data.has_memory });
+      })
+      .catch(() => {});
     fetch('/api/mcp')
       .then((r) => r.json())
       .then((data: { mcpServers?: Record<string, unknown> }) => {
@@ -189,6 +199,87 @@ export default function SettingsPage({ onLocaleChange }: SettingsPageProps) {
           {error && <span className="text-sm text-red-400">{error}</span>}
         </div>
 
+        {/* Project Directory */}
+        <section className="pt-6">
+          <h3 className="text-sm font-semibold text-gray-300 mb-1">{t('settings.projectTitle') || 'Project Directory'}</h3>
+          <p className="text-xs text-gray-500 mb-3">{t('settings.projectDesc') || 'The directory where CLAUDE.md, skills, agents, and memory are stored.'}</p>
+
+          <div className="p-3 rounded-lg border border-gray-700 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400 font-mono flex-1 truncate">{projectPath || '(not set)'}</span>
+              {projectStatus && (
+                <div className="flex gap-1">
+                  <span className={projectStatus.has_claude_md ? 'badge-green' : 'badge-gray'}>CLAUDE.md</span>
+                  <span className={projectStatus.has_skills ? 'badge-green' : 'badge-gray'}>Skills</span>
+                  <span className={projectStatus.has_memory ? 'badge-green' : 'badge-gray'}>Memory</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 items-center">
+              <input
+                type="text"
+                value={initPath}
+                onChange={e => setInitPath(e.target.value)}
+                placeholder={t('settings.projectPlaceholder') || '~/claude-agent or /path/to/project'}
+                className="input-base flex-1 text-xs"
+              />
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/project/browse');
+                    const data = await res.json();
+                    if (data.path) setInitPath(data.path);
+                  } catch {}
+                }}
+                className="btn-secondary text-xs py-1.5 whitespace-nowrap"
+              >
+                {t('settings.projectBrowse') || 'Browse'}
+              </button>
+              <button
+                onClick={async () => {
+                  if (!initPath.trim()) return;
+                  setInitStatus('Initializing...');
+                  try {
+                    const res = await fetch('/api/project/init', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ project_path: initPath.trim() }),
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                      setProjectPath(data.path);
+                      setInitStatus('Initialized! Restart app to use new path.');
+                    } else {
+                      setInitStatus(`Error: ${data.error}`);
+                    }
+                  } catch (err) { setInitStatus(`Error: ${(err as Error).message}`); }
+                  setTimeout(() => setInitStatus(''), 5000);
+                }}
+                className="btn-primary text-xs py-1.5"
+              >
+                {t('settings.projectInit') || 'Initialize'}
+              </button>
+              <button
+                onClick={async () => {
+                  if (!confirm('Reset all skills, agents, rules to defaults? Your memory will be kept.')) return;
+                  setInitStatus('Resetting...');
+                  try {
+                    const res = await fetch('/api/project/reset', { method: 'POST' });
+                    const data = await res.json();
+                    setInitStatus(data.success ? 'Reset complete!' : `Error: ${data.error}`);
+                  } catch (err) { setInitStatus(`Error: ${(err as Error).message}`); }
+                  setTimeout(() => setInitStatus(''), 5000);
+                }}
+                className="text-xs text-yellow-400 hover:text-yellow-300 px-2"
+              >
+                {t('settings.projectReset') || 'Reset Defaults'}
+              </button>
+            </div>
+            {initStatus && <p className="text-xs text-yellow-400">{initStatus}</p>}
+          </div>
+        </section>
+
         {/* CLI Detection */}
         <section className="pt-6">
           <h3 className="text-sm font-semibold text-gray-300 mb-3">{t('settings.cliTitle') || 'CLI Detection'}</h3>
@@ -211,6 +302,8 @@ export default function SettingsPage({ onLocaleChange }: SettingsPageProps) {
 function CliDetector() {
   const [clis, setClis] = useState<{ name: string; path: string | null; version: string | null }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [defaultCli, setDefaultCli] = useState<string>('claude');
+  const [savingDefault, setSavingDefault] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/cli-detect')
@@ -218,26 +311,86 @@ function CliDetector() {
       .then(data => { if (Array.isArray(data)) setClis(data); })
       .catch(() => {})
       .finally(() => setLoading(false));
+
+    fetch('/api/settings')
+      .then(r => r.json())
+      .then((data: Record<string, string>) => {
+        if (data.default_cli) setDefaultCli(data.default_cli);
+      })
+      .catch(() => {});
   }, []);
+
+  const setAsDefault = async (cliName: string) => {
+    setSavingDefault(cliName);
+    try {
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ default_cli: cliName }),
+      });
+      setDefaultCli(cliName);
+    } catch {}
+    setSavingDefault(null);
+  };
+
+  // Only show AI CLIs in the detection section (claude, codex, gemini, opencode)
+  const AI_CLIS = ['claude', 'codex', 'gemini', 'opencode'];
+  const aiClis = clis.filter(c => AI_CLIS.includes(c.name));
+  const otherClis = clis.filter(c => !AI_CLIS.includes(c.name));
 
   if (loading) return <p className="text-xs text-gray-500">{t('settings.detecting') || 'Detecting CLIs...'}</p>;
 
   return (
-    <div className="space-y-1.5">
-      {clis.map(cli => (
-        <div key={cli.name} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-700">
-          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cli.path ? 'bg-green-400' : 'bg-gray-600'}`} />
-          <span className="text-sm text-gray-200 font-medium w-24">{cli.name}</span>
-          {cli.path ? (
-            <>
-              <span className="text-xs text-gray-400 font-mono truncate flex-1">{cli.path}</span>
-              {cli.version && <span className="badge-green text-xs">{cli.version}</span>}
-            </>
-          ) : (
-            <span className="text-xs text-gray-500 italic">{t('settings.notInstalled') || 'Not installed'}</span>
-          )}
+    <div className="space-y-3">
+      {aiClis.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-gray-500 font-medium">AI CLIs</p>
+          {aiClis.map(cli => (
+            <div key={cli.name} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-700">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cli.path ? 'bg-green-400' : 'bg-gray-600'}`} />
+              <span className="text-sm text-gray-200 font-medium w-24">{cli.name}</span>
+              {cli.path ? (
+                <>
+                  <span className="text-xs text-gray-400 font-mono truncate flex-1">{cli.path}</span>
+                  {cli.version && <span className="badge-green text-xs">{cli.version}</span>}
+                  {defaultCli === cli.name ? (
+                    <span className="text-xs text-blue-400 font-medium px-2">Default</span>
+                  ) : (
+                    <button
+                      onClick={() => setAsDefault(cli.name)}
+                      disabled={savingDefault === cli.name}
+                      className="text-xs text-gray-500 hover:text-blue-400 transition-colors px-2 disabled:opacity-50"
+                    >
+                      {savingDefault === cli.name ? 'Saving...' : 'Set Default'}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs text-gray-500 italic flex-1">{t('settings.notInstalled') || 'Not installed'}</span>
+              )}
+            </div>
+          ))}
         </div>
-      ))}
+      )}
+      {otherClis.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-gray-500 font-medium">Other tools</p>
+          {otherClis.map(cli => (
+            <div key={cli.name} className="flex items-center gap-3 p-2.5 rounded-lg border border-gray-700">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cli.path ? 'bg-green-400' : 'bg-gray-600'}`} />
+              <span className="text-sm text-gray-200 font-medium w-24">{cli.name}</span>
+              {cli.path ? (
+                <>
+                  <span className="text-xs text-gray-400 font-mono truncate flex-1">{cli.path}</span>
+                  {cli.version && <span className="badge-green text-xs">{cli.version}</span>}
+                </>
+              ) : (
+                <span className="text-xs text-gray-500 italic">{t('settings.notInstalled') || 'Not installed'}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

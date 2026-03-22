@@ -12,6 +12,9 @@ import McpPage from './components/McpPage';
 import HistoryPage from './components/HistoryPage';
 import AgentsPage from './components/AgentsPage';
 import ScheduledTasksPage from './components/ScheduledTasksPage';
+import SecretsPage from './components/SecretsPage';
+import ConfigBotPage from './components/ConfigBotPage';
+import ProjectsPage from './components/ProjectsPage';
 
 export default function App() {
   const [activePage, setActivePage] = useState<Page>('chat');
@@ -59,10 +62,16 @@ export default function App() {
         return <McpPage key={locale} />;
       case 'tasks':
         return <ScheduledTasksPage key={locale} />;
+      case 'secrets':
+        return <SecretsPage key={locale} />;
       case 'settings':
         return <SettingsPage onLocaleChange={handleLocaleChange} />;
       case 'channels':
         return <ChannelsPage />;
+      case 'config':
+        return <ConfigBotPage key={locale} />;
+      case 'projects':
+        return <ProjectsPage key={locale} />;
       default:
         return <ChatWindow />;
     }

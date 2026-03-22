@@ -126,9 +126,24 @@ Date: YYYY-MM-DD
 [URL or reference used]
 ```
 
-### 10. Present to User
+### 10. Link Comment (IMPORTANT for Threads/Instagram)
+Threads and Instagram do NOT support clickable links in post body. If the content references source URLs:
+1. Remove URLs from the post body (keep the text description)
+2. Collect all source URLs into a "link comment"
+3. After publishing the main post, immediately reply to it with the links:
+   ```
+   Sources:
+   - [Title] URL1
+   - [Title] URL2
+   ```
+4. Save the link comment content in the workspace file under `## Link Comment`
+
+This is critical for Threads — posts with URLs in the body get reduced distribution.
+
+### 11. Present to User
 Show:
-- The ready-to-post content
+- The ready-to-post content (without URLs in body)
+- Link comment content (URLs to post as first reply)
 - Score with breakdown
 - Image path (if generated)
 - Suggested posting time based on platform specs
@@ -137,6 +152,7 @@ Show:
 ## Rules
 - Always read sources before writing — no exceptions
 - Score must be >= 70 before presenting
+- NEVER put URLs in the Threads/IG post body — always use link comment
 - Conversation Durability must be >= 55 individually
 - Remove AI filler: "in today's rapidly evolving...", "it's worth noting...", "dive deep into..."
 - Match user's language (check profile for preferred language)

@@ -2,6 +2,17 @@ import { useState, useEffect } from 'react';
 import type { ScheduledTask, TaskExecution, Agent } from '../types';
 import { t } from '../i18n';
 
+function useAvailableClis(): string[] {
+  const [clis, setClis] = useState<string[]>(['claude']);
+  useEffect(() => {
+    fetch('/api/cli-available')
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setClis(data); })
+      .catch(() => {});
+  }, []);
+  return clis;
+}
+
 // Cron preset definitions
 const SCHEDULE_PRESETS = [
   { labelKey: 'tasks.presetEvery6h', cron: '0 */6 * * *' },
@@ -59,12 +70,13 @@ interface AddTaskFormProps {
 function AddTaskForm({ agents, onSave, onCancel }: AddTaskFormProps) {
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [agent, setAgent] = useState('default');
+  const [agent, setAgent] = useState('claude');
   const [selectedPreset, setSelectedPreset] = useState(SCHEDULE_PRESETS[0].cron);
   const [customCron, setCustomCron] = useState('');
   const [timezone, setTimezone] = useState('Asia/Taipei');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const availableClis = useAvailableClis();
 
   const isCustom = selectedPreset === '';
   const finalCron = isCustom ? customCron : selectedPreset;
@@ -119,15 +131,14 @@ function AddTaskForm({ agents, onSave, onCancel }: AddTaskFormProps) {
       </div>
 
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-1">{t('tasks.agent')}</label>
+        <label className="block text-xs font-medium text-gray-400 mb-1">{t('tasks.agent') || 'CLI'}</label>
         <select
           value={agent}
           onChange={(e) => setAgent(e.target.value)}
-          className="input-base w-full"
+          className="input-base w-full text-xs"
         >
-          <option value="default">default</option>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
+          {availableClis.map((cli) => (
+            <option key={cli} value={cli}>{cli}</option>
           ))}
         </select>
       </div>

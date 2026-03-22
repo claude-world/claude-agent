@@ -16,11 +16,14 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { page: 'chat', labelKey: 'nav.chat', icon: '💬' },
   { page: 'history', labelKey: 'nav.history', icon: '📋' },
+  { page: 'projects', labelKey: 'nav.projects', icon: '🏛️' },
   { page: 'skills', labelKey: 'nav.skills', icon: '⚡' },
   { page: 'memory', labelKey: 'nav.memory', icon: '🧠' },
   { page: 'agents', labelKey: 'nav.agents', icon: '🤖' },
   { page: 'mcp', labelKey: 'nav.mcp', icon: '🔌' },
+  { page: 'secrets', labelKey: 'nav.secrets', icon: '🔑' },
   { page: 'tasks', labelKey: 'nav.tasks', icon: '⏰' },
+  { page: 'config', labelKey: 'nav.config', icon: '🛠️' },
   { page: 'settings', labelKey: 'nav.settings', icon: '⚙️' },
   { page: 'channels', labelKey: 'nav.channels', icon: '📡' }
 ];

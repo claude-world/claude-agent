@@ -38,9 +38,9 @@ Hooks are Node.js scripts in `.claude/hooks/`. They must:
 
 ### Improve the Web UI / Desktop App
 
-The control panel lives in `app/`:
-- **Server** (`app/server/`): Express + WebSocket + SQLite + Telegram/Discord bridges
-- **Client** (`app/client/`): React 18 + Tailwind CSS + i18n (en/zh-TW/ja)
+The control panel lives in `app/` (12 pages):
+- **Server** (`app/server/`): Express + WebSocket + SQLite + Telegram/Discord bridges + discussion engine + scheduler
+- **Client** (`app/client/`): React 18 + Tailwind CSS + i18n (en/zh-TW/ja) — 12 pages
 - **Desktop** (`app/electron/`): Electron packaging for macOS/Windows/Linux
 
 ```bash

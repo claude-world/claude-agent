@@ -31,7 +31,7 @@ export interface ChannelAccount {
 
 export type WsInbound =
   | { type: 'subscribe'; sessionId: string }
-  | { type: 'chat'; sessionId: string; content: string }
+  | { type: 'chat'; sessionId: string; content: string; cli?: string; configBot?: boolean }
   | { type: 'interrupt'; sessionId: string };
 
 export type WsOutbound =
@@ -122,7 +122,7 @@ export interface ScheduledTask {
 export interface TaskExecution {
   id: string;
   task_id: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'success' | 'error';
   output: string | null;
   error: string | null;
   cost_usd: number | null;
@@ -145,9 +145,52 @@ export interface HistoryMessage {
   created_at: string;
 }
 
+// ---- Secrets types ----
+
+export interface Secret {
+  id: string;
+  name: string;
+  value: string; // "***" from API, real value only server-side
+  description: string;
+  category: 'general' | 'social' | 'api' | 'mcp';
+  created_at: string;
+  updated_at: string;
+}
+
+// ---- Project Discussion types ----
+
+export interface Expert {
+  name: string;
+  role: string;
+  cli: string;
+  systemPrompt: string;
+  skills?: string[];
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  topic: string;
+  discussion_mode: string;
+  status: string; // setup | discussing | discussed | concluded
+  experts: Expert[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscussionMessage {
+  id: string;
+  project_id: string;
+  expert_name: string;
+  cli: string;
+  content: string;
+  round: number;
+  created_at: string;
+}
+
 // ---- Page navigation ----
 
-export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'settings' | 'channels';
+export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects';
 
 export interface McpServerConfig {
   type?: string;

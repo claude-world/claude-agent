@@ -10,15 +10,16 @@ Claude-Agent is a ready-to-use [Claude Code](https://docs.anthropic.com/en/docs/
 |----------|------|
 | **49 Skills** | Productivity, smart home, media, messaging, security — full [OpenClaw](https://github.com/openclaw/openclaw) feature parity |
 | **4 Use Methods** | CLI, Web UI (localhost:3456), Desktop App (.dmg/.exe), Telegram/Discord |
-| **9-Page Control Panel** | Chat, History, Skills, Agents, Memory, MCP, Scheduled Tasks, Settings, Channels |
+| **12-Page Control Panel** | Chat, History, Projects, Skills, Agents, Memory, MCP, Secrets, Schedule, Config Bot, Settings, Channels |
 | **Scheduled Tasks** | Cron-based agent scheduling with execution history and manual trigger |
+| **Project Discussion** | Multi-expert roundtable, debate, relay modes with streaming + Markdown output |
 | **4 Agents** | researcher, writer, analyst, content-publisher (import/export/create with AI) |
 | **Persistent Memory** | Autonomous markdown-based memory surviving compaction and restarts |
 | **4 MCP Servers** | trend-pulse, claude-101, cf-browser, notebooklm (66 tools) |
 | **CLI Detection** | Auto-detects claude, codex, gemini, opencode, node, uvx, gh |
 | **Content Pipeline** | Trend discovery → patent-scored posts → NotebookLM image cards / podcasts |
 | **4 Lifecycle Hooks** | Session bootstrap, message classifier, context guardian, session farewell |
-| **i18n** | English, 繁體中文, 日本語 — all 9 pages fully translated |
+| **i18n** | English, 繁體中文, 日本語 — all 12 pages fully translated |
 | **OpenClaw Migration** | One-click import of memory, skills, agents, config |
 | **Desktop App** | Electron packaging for macOS (.dmg), Windows (.exe), Linux (.AppImage) |
 
@@ -38,12 +39,13 @@ claude-agent/
 │   │   ├── agent.ts             Claude Code SDK wrapper
 │   │   ├── db.ts                SQLite (sessions, messages, settings, channels, tasks)
 │   │   ├── scheduler.ts         Cron task scheduler (node-cron)
+│   │   ├── discussion.ts        Multi-expert discussion engine
 │   │   ├── telegram.ts          Built-in Telegram bridge
 │   │   └── discord.ts           Built-in Discord bridge
 │   ├── client/
-│   │   ├── App.tsx              React 18 + Tailwind (9 pages)
+│   │   ├── App.tsx              React 18 + Tailwind (12 pages)
 │   │   ├── i18n.ts              Translations (en, zh-TW, ja)
-│   │   └── components/ (11)     Chat, History, Skills, Agents, Memory, MCP, Tasks, Settings, Channels
+│   │   └── components/ (12)     Chat, History, Projects, Skills, Agents, Memory, MCP, Secrets, Tasks, Config Bot, Settings, Channels
 │   ├── electron/main.cjs        Desktop app entry point
 │   └── package.json             App dependencies
 ├── memory/                      Persistent memory (auto-managed)
@@ -110,18 +112,21 @@ npm run dev    # Start the control panel
 
 Open **http://localhost:3456** in your browser.
 
-**9 Pages:**
+**12 Pages:**
 
 | Page | Description |
 |------|-------------|
 | **💬 Chat** | Talk to your agent with streaming responses and tool call visualization |
 | **📋 History** | Browse all session messages, search across conversations, view tool calls |
+| **🏛️ Projects** | Multi-expert collaborative discussion with cross-CLI debate |
 | **⚡ Skills** | Browse 49 skills, search, import/export, create new skills with AI |
 | **🤖 Agents** | Manage 4 agents, import/export, create new agents with AI |
 | **🧠 Memory** | View and edit your agent's memory files |
 | **🔌 MCP** | Add/remove MCP servers, view tool counts and tier status |
+| **🔑 Secrets** | Store API tokens and credentials, auto-injected as env vars |
 | **⏰ Schedule** | Cron-based task scheduling, assign to agents, execution history |
-| **⚙️ Settings** | Language (en/zh-TW/ja), model preference, CLI detection, OpenClaw migration |
+| **🛠️ Config Bot** | Configure the entire system through natural language conversation |
+| **⚙️ Settings** | Language, model, CLI detection, project directory, OpenClaw migration |
 | **📡 Channels** | Configure Telegram/Discord bots with start/stop and live status |
 
 ---
@@ -365,6 +370,7 @@ Claude-Agent autonomously manages its own memory without being asked:
 | `researcher` | sonnet | Deep research requiring 5-10 sources, comparative analysis |
 | `writer` | sonnet | Long-form content: articles, reports, essays (500+ words) |
 | `analyst` | sonnet | Data analysis, decision matrices, pros/cons evaluation |
+| `content-publisher` | sonnet | Full pipeline: trends → research → write → score → visuals → package |
 
 Agents save detailed output to `workspace/` and return concise summaries to the main context.
 

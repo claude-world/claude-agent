@@ -119,12 +119,27 @@ function MessageBubble({ message }: MessageBubbleProps) {
   );
 }
 
+interface SkillItem {
+  id: string;
+  name: string;
+  command: string;
+  description: string;
+}
+
 export default function ChatWindow() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [selectedCli, setSelectedCli] = useState<string>('claude');
+  const [availableClis, setAvailableClis] = useState<string[]>(['claude']);
+
+  // Slash command autocomplete
+  const [allSkills, setAllSkills] = useState<SkillItem[]>([]);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteItems, setAutocompleteItems] = useState<SkillItem[]>([]);
+  const [autocompleteIndex, setAutocompleteIndex] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -148,6 +163,24 @@ export default function ChatWindow() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isRunning]);
+
+  // Load available CLIs + default setting + skills on mount
+  useEffect(() => {
+    fetch('/api/cli-available')
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setAvailableClis(data); })
+      .catch(() => {});
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((data: Record<string, string>) => {
+        if (data.default_cli) setSelectedCli(data.default_cli);
+      })
+      .catch(() => {});
+    fetch('/api/skills')
+      .then((r) => r.json())
+      .then((data: SkillItem[]) => { if (Array.isArray(data)) setAllSkills(data); })
+      .catch(() => {});
+  }, []);
 
   // Load sessions on mount
   useEffect(() => {
@@ -291,7 +324,8 @@ export default function ChatWindow() {
     sendJsonMessage({
       type: 'chat',
       sessionId: activeSessionId,
-      content: text
+      content: text,
+      cli: selectedCli
     });
   }, [input, readyState, isRunning, activeSessionId, sendJsonMessage]);
 
@@ -301,7 +335,36 @@ export default function ChatWindow() {
     setIsRunning(false);
   }, [activeSessionId, sendJsonMessage]);
 
+  const selectAutocomplete = (skill: SkillItem) => {
+    setInput(`/${skill.id} `);
+    setShowAutocomplete(false);
+    inputRef.current?.focus();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Autocomplete navigation
+    if (showAutocomplete && autocompleteItems.length > 0) {
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        selectAutocomplete(autocompleteItems[autocompleteIndex]);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setAutocompleteIndex(i => Math.min(i + 1, autocompleteItems.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setAutocompleteIndex(i => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Escape') {
+        setShowAutocomplete(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -328,6 +391,17 @@ export default function ChatWindow() {
         <button onClick={createSession} className="btn-secondary text-xs px-3 py-1.5 whitespace-nowrap">
           + New Session
         </button>
+
+        <select
+          value={selectedCli}
+          onChange={(e) => setSelectedCli(e.target.value)}
+          className="input-base text-xs py-1.5"
+          title="Select AI CLI"
+        >
+          {availableClis.map((cli) => (
+            <option key={cli} value={cli}>{cli}</option>
+          ))}
+        </select>
 
         {isRunning && (
           <button onClick={interruptSession} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap">
@@ -381,12 +455,47 @@ export default function ChatWindow() {
       </div>
 
       {/* Input */}
-      <div className="flex-shrink-0 px-4 py-3 border-t border-gray-700 bg-gray-800">
+      <div className="flex-shrink-0 px-4 py-3 border-t border-gray-700 bg-gray-800 relative">
+        {/* Slash command autocomplete dropdown */}
+        {showAutocomplete && autocompleteItems.length > 0 && (
+          <div className="absolute bottom-full left-4 right-4 mb-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl overflow-hidden z-50 max-h-64 overflow-y-auto">
+            {autocompleteItems.map((skill, i) => (
+              <button
+                key={skill.id}
+                onClick={() => selectAutocomplete(skill)}
+                className={`w-full text-left px-3 py-2 flex items-center gap-3 transition-colors ${
+                  i === autocompleteIndex ? 'bg-blue-600/30 text-white' : 'text-gray-300 hover:bg-gray-700'
+                }`}
+              >
+                <span className="text-blue-400 font-mono text-sm w-36 flex-shrink-0">/{skill.id}</span>
+                <span className="text-xs text-gray-400 truncate">{skill.description}</span>
+                <span className="text-xs text-gray-600 ml-auto flex-shrink-0">Tab</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex gap-2 items-end">
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setInput(val);
+
+              // Slash command autocomplete
+              if (val.startsWith('/')) {
+                const query = val.slice(1).toLowerCase();
+                const matches = allSkills.filter(s =>
+                  s.id.includes(query) || s.name.toLowerCase().includes(query) || s.command.includes(query)
+                ).slice(0, 8);
+                setAutocompleteItems(matches);
+                setShowAutocomplete(matches.length > 0);
+                setAutocompleteIndex(0);
+              } else {
+                setShowAutocomplete(false);
+              }
+            }}
             onKeyDown={handleKeyDown}
             placeholder={
               !activeSessionId

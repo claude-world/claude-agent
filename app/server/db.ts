@@ -3,16 +3,18 @@ import { randomUUID } from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import os from "os";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.join(__dirname, "../../data");
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// Store DB in user home directory so it persists across app updates
+const HOME_DATA_DIR = path.join(process.env.HOME || os.homedir(), ".claude-agent", "data");
+if (!fs.existsSync(HOME_DATA_DIR)) {
+  fs.mkdirSync(HOME_DATA_DIR, { recursive: true });
 }
 
-const DB_PATH = path.join(DATA_DIR, "claude-agent.db");
+const DB_PATH = path.join(HOME_DATA_DIR, "claude-agent.db");
 
 const db = new Database(DB_PATH);
 
@@ -56,7 +58,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
-    agent TEXT DEFAULT 'default',
+    agent TEXT DEFAULT 'claude',
     schedule TEXT NOT NULL,
     timezone TEXT DEFAULT 'Asia/Taipei',
     enabled INTEGER DEFAULT 1,
@@ -76,6 +78,37 @@ db.exec(`
     started_at TEXT DEFAULT (datetime('now')),
     completed_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS secrets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    value TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    discussion_mode TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'setup',
+    experts TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS discussion_messages (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    expert_name TEXT NOT NULL,
+    cli TEXT NOT NULL DEFAULT 'claude',
+    content TEXT NOT NULL,
+    round INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // Indices for performance
@@ -85,6 +118,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_channel_accounts_platform ON channel_accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_task_executions_task ON task_executions(task_id);
   CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled ON scheduled_tasks(enabled);
+  CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);
+  CREATE INDEX IF NOT EXISTS idx_disc_msg_project ON discussion_messages(project_id);
 `);
 
 // Types
@@ -138,6 +173,45 @@ export interface TaskExecution {
   triggered_by: string;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface Secret {
+  id: string;
+  name: string;
+  value: string;
+  description: string;
+  category: "general" | "social" | "api" | "mcp";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Expert {
+  name: string;
+  role: string;
+  cli: string;
+  systemPrompt: string;
+  skills?: string[];
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  topic: string;
+  discussion_mode: string;
+  status: string;
+  experts: Expert[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscussionMessage {
+  id: string;
+  project_id: string;
+  expert_name: string;
+  cli: string;
+  content: string;
+  round: number;
+  created_at: string;
 }
 
 // Prepared statements
@@ -214,6 +288,49 @@ const stmts = {
     `UPDATE scheduled_tasks SET enabled = ?, updated_at = datetime('now') WHERE id = ?`
   ),
 
+  // Secrets
+  listSecrets: db.prepare(`SELECT * FROM secrets ORDER BY name ASC`),
+  getSecret: db.prepare(`SELECT * FROM secrets WHERE id = ?`),
+  getSecretByName: db.prepare(`SELECT * FROM secrets WHERE name = ?`),
+  insertSecret: db.prepare(
+    `INSERT INTO secrets (id, name, value, description, category) VALUES (?, ?, ?, ?, ?)`
+  ),
+  updateSecret: db.prepare(
+    `UPDATE secrets SET value = ?, description = ?, category = ?, updated_at = datetime('now') WHERE id = ?`
+  ),
+  deleteSecret: db.prepare(`DELETE FROM secrets WHERE id = ?`),
+
+  // Projects
+  listProjects: db.prepare(
+    `SELECT * FROM projects ORDER BY updated_at DESC`
+  ),
+  getProject: db.prepare(
+    `SELECT * FROM projects WHERE id = ?`
+  ),
+  insertProject: db.prepare(
+    `INSERT INTO projects (id, name, topic, discussion_mode, status, experts)
+     VALUES (?, ?, ?, ?, 'setup', '[]')`
+  ),
+  updateProject: db.prepare(
+    `UPDATE projects SET experts = COALESCE(?, experts),
+     status = COALESCE(?, status),
+     discussion_mode = COALESCE(?, discussion_mode),
+     updated_at = datetime('now')
+     WHERE id = ?`
+  ),
+  deleteProject: db.prepare(
+    `DELETE FROM projects WHERE id = ?`
+  ),
+
+  // Discussion messages
+  insertDiscussionMessage: db.prepare(
+    `INSERT INTO discussion_messages (id, project_id, expert_name, cli, content, round)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  getDiscussionMessages: db.prepare(
+    `SELECT * FROM discussion_messages WHERE project_id = ? ORDER BY round ASC, created_at ASC`
+  ),
+
   // Task executions
   insertTaskExecution: db.prepare(
     `INSERT INTO task_executions (id, task_id, status, triggered_by)
@@ -236,6 +353,13 @@ function parseChannelAccount(row: any): ChannelAccount {
     ...row,
     allowed_users: JSON.parse(row.allowed_users || "[]"),
     enabled: Boolean(row.enabled),
+  };
+}
+
+function parseProject(row: any): Project {
+  return {
+    ...row,
+    experts: JSON.parse(row.experts || "[]"),
   };
 }
 
@@ -487,6 +611,156 @@ export const store = {
       return (stmts.listTaskExecutions.all(taskId, limit) as any[]).map(parseTaskExecution);
     }
     return (stmts.listAllTaskExecutions.all(limit) as any[]).map(parseTaskExecution);
+  },
+
+  // Secrets
+  listSecrets(): Secret[] {
+    const rows = stmts.listSecrets.all() as Secret[];
+    return rows.map(r => ({ ...r, value: "***" }));
+  },
+
+  listSecretsRaw(): Secret[] {
+    return stmts.listSecrets.all() as Secret[];
+  },
+
+  getSecret(id: string): Secret | undefined {
+    const row = stmts.getSecret.get(id) as Secret | undefined;
+    if (!row) return undefined;
+    return { ...row, value: "***" };
+  },
+
+  getSecretByName(name: string): string | undefined {
+    const row = stmts.getSecretByName.get(name) as Secret | undefined;
+    return row?.value;
+  },
+
+  createSecret(data: {
+    name: string;
+    value: string;
+    description?: string;
+    category?: "general" | "social" | "api" | "mcp";
+  }): Secret {
+    const id = randomUUID();
+    stmts.insertSecret.run(
+      id,
+      data.name,
+      data.value,
+      data.description ?? "",
+      data.category ?? "general"
+    );
+    const row = stmts.getSecret.get(id) as Secret;
+    return { ...row, value: "***" };
+  },
+
+  updateSecret(
+    id: string,
+    data: Partial<{
+      value: string;
+      description: string;
+      category: "general" | "social" | "api" | "mcp";
+    }>
+  ): Secret | undefined {
+    const existing = stmts.getSecret.get(id) as Secret | undefined;
+    if (!existing) return undefined;
+    stmts.updateSecret.run(
+      data.value ?? existing.value,
+      data.description ?? existing.description,
+      data.category ?? existing.category,
+      id
+    );
+    const row = stmts.getSecret.get(id) as Secret;
+    return { ...row, value: "***" };
+  },
+
+  deleteSecret(id: string): boolean {
+    const result = stmts.deleteSecret.run(id);
+    return result.changes > 0;
+  },
+
+  // Projects
+  listProjects(): Project[] {
+    return (stmts.listProjects.all() as any[]).map(parseProject);
+  },
+
+  getProject(id: string): Project | undefined {
+    const row = stmts.getProject.get(id) as any;
+    if (!row) return undefined;
+    return parseProject(row);
+  },
+
+  createProject(data: {
+    name: string;
+    topic: string;
+    discussion_mode?: string;
+  }): Project {
+    const id = randomUUID();
+    stmts.insertProject.run(
+      id,
+      data.name,
+      data.topic,
+      data.discussion_mode ?? "auto"
+    );
+    return parseProject(stmts.getProject.get(id));
+  },
+
+  updateProject(
+    id: string,
+    data: Partial<{
+      experts: Expert[];
+      status: string;
+      discussion_mode: string;
+    }>
+  ): Project | undefined {
+    stmts.updateProject.run(
+      data.experts !== undefined ? JSON.stringify(data.experts) : null,
+      data.status !== undefined ? data.status : null,
+      data.discussion_mode !== undefined ? data.discussion_mode : null,
+      id
+    );
+    const row = stmts.getProject.get(id) as any;
+    if (!row) return undefined;
+    return parseProject(row);
+  },
+
+  deleteProject(id: string): boolean {
+    const result = stmts.deleteProject.run(id);
+    return result.changes > 0;
+  },
+
+  // Discussion messages
+  addDiscussionMessage(data: {
+    project_id: string;
+    expert_name: string;
+    cli: string;
+    content: string;
+    round: number;
+  }): DiscussionMessage {
+    const id = randomUUID();
+    stmts.insertDiscussionMessage.run(
+      id,
+      data.project_id,
+      data.expert_name,
+      data.cli,
+      data.content,
+      data.round
+    );
+    return {
+      id,
+      project_id: data.project_id,
+      expert_name: data.expert_name,
+      cli: data.cli,
+      content: data.content,
+      round: data.round,
+      created_at: new Date().toISOString(),
+    };
+  },
+
+  getDiscussionMessages(project_id: string): DiscussionMessage[] {
+    return stmts.getDiscussionMessages.all(project_id) as DiscussionMessage[];
+  },
+
+  clearDiscussionMessages(project_id: string): void {
+    db.prepare("DELETE FROM discussion_messages WHERE project_id = ?").run(project_id);
   },
 
   // Cross-session history search

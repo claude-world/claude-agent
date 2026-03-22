@@ -1,5 +1,6 @@
 import cron from "node-cron";
-import { AgentSession } from "./agent.ts";
+import { AgentSession, CliSession } from "./agent.ts";
+import type { CliType } from "./agent.ts";
 import store from "./db.ts";
 
 /**
@@ -134,6 +135,36 @@ class TaskScheduler {
     console.log(
       `[Scheduler] Executing task ${taskId} (${task.name}), execution ${execution.id}`
     );
+
+    const cli = (task.agent as CliType) || 'claude';
+
+    if (cli !== 'claude') {
+      // Use CliSession for non-Claude CLIs
+      const cliSession = new CliSession(cli, process.env.AGENT_ROOT || process.cwd());
+      try {
+        const output = await cliSession.execute(task.prompt);
+        const duration_ms = Date.now() - startedAt;
+        store.updateTaskExecution(execution.id, {
+          status: "success",
+          output,
+          cost_usd: null,
+          duration_ms,
+        });
+        console.log(
+          `[Scheduler] Task ${taskId} (${cli}) completed in ${duration_ms}ms`
+        );
+      } catch (err) {
+        const duration_ms = Date.now() - startedAt;
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        store.updateTaskExecution(execution.id, {
+          status: "error",
+          error: errorMsg,
+          duration_ms,
+        });
+        console.error(`[Scheduler] Task ${taskId} (${cli}) failed: ${errorMsg}`);
+      }
+      return;
+    }
 
     // Each execution gets its own ephemeral AgentSession.
     // We do not persist this session in the sessions table — it's scheduler-internal.

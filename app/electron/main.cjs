@@ -71,11 +71,40 @@ function startServer() {
     }
   }
 
+  // For packaged app: find the actual git clone directory
+  // Check ~/.claude-agent/project.path or use env var
+  let agentRoot = projectDir; // default: app bundle (dev mode)
+  if (app.isPackaged) {
+    const configFile = path.join(process.env.HOME || "", ".claude-agent", "project.path");
+    if (fs.existsSync(configFile)) {
+      const savedPath = fs.readFileSync(configFile, "utf8").trim();
+      if (fs.existsSync(path.join(savedPath, "CLAUDE.md"))) {
+        agentRoot = savedPath;
+      }
+    }
+    // If no config, try common locations
+    if (agentRoot === projectDir) {
+      const guesses = [
+        path.join(process.env.HOME || "", "claude-agent"),
+        path.join(process.env.HOME || "", "github", "claude-agent"),
+        path.join(process.env.HOME || "", "Projects", "claude-agent"),
+      ];
+      for (const g of guesses) {
+        if (fs.existsSync(path.join(g, "CLAUDE.md"))) {
+          agentRoot = g;
+          break;
+        }
+      }
+    }
+    console.log(`[Electron] AGENT_ROOT: ${agentRoot}`);
+  }
+
   const spawnEnv = {
     ...process.env,
     PORT: String(PORT),
     HOST: "127.0.0.1",
     PATH: mergedPath,
+    AGENT_ROOT: agentRoot,
   };
 
   // Always use system Node + tsx

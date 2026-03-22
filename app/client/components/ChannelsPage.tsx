@@ -133,10 +133,19 @@ interface ChannelCardProps {
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (id: string) => void;
   onStartStop: (id: string, action: 'start' | 'stop') => void;
+  onUpdate: (id: string, allowed_users: string[]) => void;
 }
 
-function ChannelCard({ account, bridgeStatus, onToggle, onDelete, onStartStop }: ChannelCardProps) {
+function ChannelCard({ account, bridgeStatus, onToggle, onDelete, onStartStop, onUpdate }: ChannelCardProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editUsers, setEditUsers] = useState(account.allowed_users.join(', '));
+
+  const handleSaveEdit = () => {
+    const users = editUsers.split(',').map(s => s.trim()).filter(Boolean);
+    onUpdate(account.id, users);
+    setEditing(false);
+  };
 
   return (
     <div className="card">
@@ -156,11 +165,36 @@ function ChannelCard({ account, bridgeStatus, onToggle, onDelete, onStartStop }:
             <div className="mt-1">
               <StatusDot enabled={account.enabled} />
             </div>
-            {account.allowed_users.length > 0 && (
-              <p className="text-xs text-gray-500 mt-1">
-                Allowed: {account.allowed_users.join(', ')}
-              </p>
+
+            {/* Allowed users — view or edit mode */}
+            {editing ? (
+              <div className="mt-2 space-y-2">
+                <label className="text-xs text-gray-400">Allowed users (chat_id, username, or user_id — comma separated):</label>
+                <input
+                  type="text"
+                  value={editUsers}
+                  onChange={e => setEditUsers(e.target.value)}
+                  className="input-base w-full text-xs"
+                  placeholder="e.g. 123456789, username, chat_id"
+                />
+                <div className="flex gap-2">
+                  <button onClick={handleSaveEdit} className="btn-primary text-xs py-1 px-3">Save</button>
+                  <button onClick={() => { setEditing(false); setEditUsers(account.allowed_users.join(', ')); }} className="text-xs text-gray-400 hover:text-gray-200 px-2">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-1 flex items-center gap-2">
+                {account.allowed_users.length > 0 ? (
+                  <p className="text-xs text-gray-500">
+                    Allowed: {account.allowed_users.join(', ')}
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-600 italic">All users allowed (no filter)</p>
+                )}
+                <button onClick={() => setEditing(true)} className="text-xs text-blue-400 hover:text-blue-300">Edit</button>
+              </div>
             )}
+
             <p className="text-xs text-gray-600 mt-1">
               Added: {new Date(account.created_at).toLocaleDateString()}
             </p>
@@ -287,6 +321,19 @@ export default function ChannelsPage() {
     } catch {}
   };
 
+  const handleUpdateUsers = async (id: string, allowed_users: string[]) => {
+    try {
+      const res = await fetch(`/api/channels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowed_users }),
+      });
+      if (res.ok) {
+        setAccounts(prev => prev.map(a => a.id === id ? { ...a, allowed_users } : a));
+      }
+    } catch {}
+  };
+
   const deleteAccount = async (id: string) => {
     setAccounts((prev) => prev.filter((a) => a.id !== id));
     try {
@@ -341,6 +388,7 @@ export default function ChannelsPage() {
               onToggle={toggleAccount}
               onDelete={deleteAccount}
               onStartStop={handleStartStop}
+              onUpdate={handleUpdateUsers}
             />
           ))
         )}
