@@ -1747,16 +1747,53 @@ wss.on("close", () => {
 });
 
 // Prevent stray SDK errors from crashing the process
-process.on("uncaughtException", (err) => {
-  console.error("[Server] Uncaught exception (non-fatal):", err.message);
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[Server] Port ${PORT} is already in use. Exiting to avoid orphan process.`);
+    process.exit(1);
+  }
+  console.error("[Server] Uncaught exception (non-fatal):", err.stack || err.message);
 });
 process.on("unhandledRejection", (reason) => {
   console.error("[Server] Unhandled rejection (non-fatal):", reason);
 });
 
+// --- PID file for orphan detection ---
+const PID_FILE = path.join(
+  process.env.HOME || "/tmp",
+  ".claude-agent",
+  "server.pid"
+);
+function writePidFile() {
+  try {
+    const dir = path.dirname(PID_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
+  } catch {
+    // non-critical
+  }
+}
+function removePidFile() {
+  try {
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
+  } catch {
+    // non-critical
+  }
+}
+
 // Start server
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[Server] Port ${PORT} is already in use. Exiting to avoid orphan process.`);
+    process.exit(1);
+  }
+  console.error("[Server] Fatal server error:", err);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
-  console.log(`Claude Agent server running at http://${HOST}:${PORT}`);
+  writePidFile();
+  console.log(`Claude Agent server running at http://${HOST}:${PORT} (PID: ${process.pid})`);
   console.log(`WebSocket endpoint: ws://${HOST}:${PORT}/ws`);
 
   // Auto-start enabled channel bridges
@@ -1775,13 +1812,44 @@ server.listen(PORT, HOST, () => {
 });
 
 // Graceful shutdown
+let isShuttingDown = false;
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log("[Server] Shutting down gracefully...");
+
   for (const [id] of activeSessions) {
-    removeActive(id);
+    try { removeActive(id); } catch {}
   }
+
+  // Stop bridges
+  try {
+    if (bridges.telegram) bridges.telegram.stop();
+    if (bridges.discord) bridges.discord.stop();
+  } catch {}
+
   scheduler.stop();
-  wss.close();
-  server.close();
+
+  // Terminate all open WebSocket connections so server.close() can complete
+  try {
+    for (const client of wss.clients) {
+      try { client.terminate(); } catch {}
+    }
+    wss.close();
+  } catch {}
+
+  server.close(() => {
+    removePidFile();
+    console.log("[Server] Shutdown complete.");
+    process.exit(0);
+  });
+
+  // Force exit if graceful shutdown hangs (8s timeout)
+  setTimeout(() => {
+    console.error("[Server] Graceful shutdown timed out, forcing exit.");
+    removePidFile();
+    process.exit(1);
+  }, 8000).unref();
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

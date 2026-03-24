@@ -6,9 +6,81 @@ const fs = require("fs");
 
 const PORT = 3456;
 const SERVER_URL = `http://127.0.0.1:${PORT}`;
+const PID_FILE = path.join(process.env.HOME || "/tmp", ".claude-agent", "server.pid");
 
 let serverProcess = null;
 let mainWindow = null;
+
+// Prevent multiple Electron instances from racing
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  console.log("[Electron] Another instance is already running. Quitting.");
+  app.exit(0);
+}
+app.on("second-instance", () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+// Check if a PID belongs to our server (not a recycled unrelated process)
+function isOurServer(pid) {
+  try {
+    const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", timeout: 3000 }).trim();
+    return cmd.includes("server/index") || cmd.includes("tsx");
+  } catch {
+    return false;
+  }
+}
+
+// Kill any orphan server processes from previous runs
+function cleanupOrphans() {
+  // 1. Check PID file
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      const oldPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
+      if (oldPid && !isNaN(oldPid)) {
+        try {
+          process.kill(oldPid, 0); // check if alive
+          if (isOurServer(oldPid)) {
+            console.log(`[Electron] Killing orphan server process (PID: ${oldPid})`);
+            process.kill(oldPid, "SIGTERM");
+          }
+        } catch {
+          // process doesn't exist
+        }
+      }
+      try { fs.unlinkSync(PID_FILE); } catch {}
+    }
+  } catch {}
+
+  // 2. Kill any remaining processes listening on our port
+  try {
+    const lsofOut = execSync(`lsof -ti tcp:${PORT}`, {
+      encoding: "utf-8",
+      timeout: 5000,
+    }).trim();
+    if (lsofOut) {
+      const pids = lsofOut.split("\n").map((p) => p.trim()).filter(Boolean);
+      let killed = false;
+      for (const pidStr of pids) {
+        const pid = parseInt(pidStr, 10);
+        if (!pid || isNaN(pid)) continue;
+        if (isOurServer(pid)) {
+          console.log(`[Electron] Killing process on port ${PORT} (PID: ${pid})`);
+          try { process.kill(pid, "SIGTERM"); killed = true; } catch {}
+        }
+      }
+      // Brief wait for processes to release the port
+      if (killed) {
+        try { execSync("sleep 0.5", { timeout: 2000 }); } catch {}
+      }
+    }
+  } catch {
+    // lsof returns exit code 1 when no matches — that's fine
+  }
+}
 
 function startServer() {
   // Get login-shell PATH
@@ -206,14 +278,48 @@ function buildMenu() {
 }
 
 function killServer() {
-  if (serverProcess) {
-    serverProcess.kill("SIGTERM");
-    setTimeout(() => { if (serverProcess) serverProcess.kill("SIGKILL"); }, 3000);
-  }
+  if (!serverProcess) return;
+
+  const proc = serverProcess;
+  const pid = proc.pid;
+  serverProcess = null; // prevent double-kill from before-quit + window-all-closed
+
+  console.log(`[Electron] Stopping server (PID: ${pid})...`);
+
+  // Send SIGTERM to the process
+  try { proc.kill("SIGTERM"); } catch {}
+
+  // Also kill the entire process tree (tsx spawns a child node process)
+  // pkill -P kills direct children; lsof fallback catches anything still on the port
+  try {
+    execSync(`pkill -TERM -P ${pid} 2>/dev/null || true`, { timeout: 3000 });
+  } catch {}
+
+  // Force kill after timeout if still alive
+  const forceKillTimer = setTimeout(() => {
+    try { process.kill(pid, 0); } catch { return; } // already dead
+    console.log(`[Electron] Force-killing server process tree...`);
+    try { process.kill(pid, "SIGKILL"); } catch {}
+    try { execSync(`pkill -KILL -P ${pid} 2>/dev/null || true`, { timeout: 3000 }); } catch {}
+    // Fallback: kill anything still on our port, but only if it's our server
+    try {
+      const out = execSync(`lsof -ti tcp:${PORT}`, { encoding: "utf-8", timeout: 3000 }).trim();
+      if (out) {
+        for (const s of out.split("\n").map((p) => p.trim()).filter(Boolean)) {
+          const p = parseInt(s, 10);
+          if (p && !isNaN(p) && isOurServer(p)) {
+            try { process.kill(p, "SIGKILL"); } catch {}
+          }
+        }
+      }
+    } catch {}
+  }, 3000);
+  forceKillTimer.unref();
 }
 
 app.whenReady().then(async () => {
   buildMenu();
+  cleanupOrphans();
   startServer();
   try {
     await waitForServer();
