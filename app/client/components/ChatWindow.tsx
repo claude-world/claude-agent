@@ -132,6 +132,7 @@ export default function ChatWindow() {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [hasResponse, setHasResponse] = useState(false);
   const [selectedCli, setSelectedCli] = useState<string>('claude');
   const [availableClis, setAvailableClis] = useState<string[]>(['claude']);
 
@@ -240,6 +241,7 @@ export default function ChatWindow() {
           // (server sends individual assistant messages, not streaming chunks)
           return [...prev, assistantMsg];
         });
+        setHasResponse(true);
         break;
       }
 
@@ -308,7 +310,7 @@ export default function ChatWindow() {
 
   const sendMessage = useCallback(() => {
     const text = input.trim();
-    if (!text || readyState !== ReadyState.OPEN || isRunning || !activeSessionId) return;
+    if (!text || readyState !== ReadyState.OPEN || (isRunning && !hasResponse) || !activeSessionId) return;
 
     // Optimistic user message
     const userMsg: DisplayMessage = {
@@ -320,6 +322,7 @@ export default function ChatWindow() {
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setIsRunning(true);
+    setHasResponse(false);
 
     sendJsonMessage({
       type: 'chat',
@@ -327,7 +330,7 @@ export default function ChatWindow() {
       content: text,
       cli: selectedCli
     });
-  }, [input, readyState, isRunning, activeSessionId, sendJsonMessage]);
+  }, [input, readyState, isRunning, hasResponse, activeSessionId, sendJsonMessage]);
 
   const interruptSession = useCallback(() => {
     if (!activeSessionId) return;
@@ -438,8 +441,8 @@ export default function ChatWindow() {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {/* Running indicator */}
-        {isRunning && (
+        {/* Running indicator — big dots before first response, subtle after */}
+        {isRunning && !hasResponse && (
           <div className="flex justify-start mb-3">
             <div className="px-4 py-3 rounded-2xl rounded-bl-md bg-gray-800 border border-gray-700">
               <div className="flex gap-1 items-center">
@@ -500,8 +503,10 @@ export default function ChatWindow() {
             placeholder={
               !activeSessionId
                 ? 'Create a session first...'
-                : isRunning
+                : isRunning && !hasResponse
                 ? 'Claude is thinking...'
+                : isRunning && hasResponse
+                ? 'Claude is working in background...'
                 : 'Message Claude Agent... (Enter to send, Shift+Enter for newline)'
             }
             rows={1}
@@ -511,11 +516,11 @@ export default function ChatWindow() {
               el.style.height = 'auto';
               el.style.height = Math.min(el.scrollHeight, 128) + 'px';
             }}
-            disabled={isRunning || readyState !== ReadyState.OPEN || !activeSessionId}
+            disabled={(isRunning && !hasResponse) || readyState !== ReadyState.OPEN || !activeSessionId}
           />
           <button
             onClick={sendMessage}
-            disabled={!input.trim() || isRunning || readyState !== ReadyState.OPEN || !activeSessionId}
+            disabled={!input.trim() || (isRunning && !hasResponse) || readyState !== ReadyState.OPEN || !activeSessionId}
             className="btn-primary h-10 px-4 flex-shrink-0"
           >
             Send
