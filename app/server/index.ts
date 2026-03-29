@@ -87,6 +87,8 @@ function resolveAgentRoot(): string {
   return fs.existsSync(fallback) ? fallback : relative;
 }
 const AGENT_ROOT = resolveAgentRoot();
+// Propagate to other modules via env var so paths.ts and scheduler pick it up
+process.env.AGENT_ROOT = AGENT_ROOT;
 console.log(`[Server] AGENT_ROOT: ${AGENT_ROOT}`);
 
 // Security: validate that a path is within user's home directory

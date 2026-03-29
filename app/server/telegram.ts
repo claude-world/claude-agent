@@ -1,12 +1,11 @@
 import TelegramBot from "node-telegram-bot-api";
 import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT, type CliType } from "./agent.ts";
 import type { store as StoreType } from "./db.ts";
+import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const AGENT_ROOT = path.resolve(__dirname, "../..");
+import fs from "fs";
+import https from "https";
+import http from "http";
 
 // Maximum Telegram message length (hard limit: 4096, keep a buffer)
 const MAX_MSG_LEN = 4000;
@@ -55,7 +54,21 @@ export class TelegramBridge {
 
     this.bot.on("message", async (msg) => {
       const chatId = String(msg.chat.id);
-      const text = msg.text?.trim();
+
+      // Handle media messages (photo, document, video, audio, voice)
+      let text = msg.text?.trim() || "";
+      let mediaContext = "";
+      try {
+        mediaContext = await this.handleMedia(msg);
+      } catch (err) {
+        console.error(`[Telegram] Media handling error:`, err);
+      }
+
+      // Combine text + media context
+      if (mediaContext) {
+        text = text ? `${text}\n\n${mediaContext}` : mediaContext;
+      }
+
       if (!text) return;
 
       // Access control — always check, even if allowlist is empty
@@ -345,6 +358,121 @@ export class TelegramBridge {
     const session = this.store.createSession(`ConfigBot:${chatId}`);
     this.chatToSession.set(configKey, session.id);
     return session.id;
+  }
+
+  /**
+   * Handle media in a Telegram message (photo, document, video, audio, voice).
+   * Downloads the file to workspace/media/ and returns context text for the agent.
+   */
+  private async handleMedia(msg: TelegramBot.Message): Promise<string> {
+    if (!this.bot) return "";
+
+    const mediaDir = path.join(AGENT_ROOT, "workspace", "media");
+    fs.mkdirSync(mediaDir, { recursive: true });
+
+    const parts: string[] = [];
+
+    // Photo — get highest resolution
+    if (msg.photo && msg.photo.length > 0) {
+      const photo = msg.photo[msg.photo.length - 1]; // highest res
+      const filePath = await this.downloadTelegramFile(photo.file_id, mediaDir, "photo");
+      if (filePath) {
+        parts.push(`[User sent a photo, saved to: ${filePath}]\nPlease analyze this image using the Read tool.`);
+      }
+    }
+
+    // Document (PDF, spreadsheet, text file, etc.)
+    if (msg.document) {
+      const ext = path.extname(msg.document.file_name || "").toLowerCase();
+      const filePath = await this.downloadTelegramFile(
+        msg.document.file_id, mediaDir, "doc",
+        msg.document.file_name
+      );
+      if (filePath) {
+        parts.push(`[User sent a document: ${msg.document.file_name || "file"} (${msg.document.mime_type || "unknown"}), saved to: ${filePath}]\nPlease read and analyze this file.`);
+      }
+    }
+
+    // Video
+    if (msg.video) {
+      const filePath = await this.downloadTelegramFile(msg.video.file_id, mediaDir, "video");
+      if (filePath) {
+        parts.push(`[User sent a video (${msg.video.duration}s), saved to: ${filePath}]\nUse the video-extract skill or ffmpeg to analyze this video.`);
+      }
+    }
+
+    // Audio
+    if (msg.audio) {
+      const filePath = await this.downloadTelegramFile(msg.audio.file_id, mediaDir, "audio",
+        msg.audio.file_name);
+      if (filePath) {
+        parts.push(`[User sent an audio file: ${msg.audio.title || msg.audio.file_name || "audio"} (${msg.audio.duration}s), saved to: ${filePath}]\nUse speech-to-text to transcribe if needed.`);
+      }
+    }
+
+    // Voice message
+    if (msg.voice) {
+      const filePath = await this.downloadTelegramFile(msg.voice.file_id, mediaDir, "voice");
+      if (filePath) {
+        parts.push(`[User sent a voice message (${msg.voice.duration}s), saved to: ${filePath}]\nPlease transcribe this using speech-to-text.`);
+      }
+    }
+
+    // Sticker
+    if (msg.sticker && !msg.sticker.is_animated) {
+      const filePath = await this.downloadTelegramFile(msg.sticker.file_id, mediaDir, "sticker");
+      if (filePath) {
+        parts.push(`[User sent a sticker: ${msg.sticker.emoji || ""}, saved to: ${filePath}]`);
+      }
+    }
+
+    // Caption (text accompanying media)
+    if (msg.caption) {
+      parts.unshift(msg.caption);
+    }
+
+    return parts.join("\n");
+  }
+
+  /**
+   * Download a file from Telegram and save to the media directory.
+   * Returns the local file path, or empty string on failure.
+   */
+  private async downloadTelegramFile(
+    fileId: string,
+    mediaDir: string,
+    prefix: string,
+    originalName?: string
+  ): Promise<string> {
+    try {
+      const fileInfo = await this.bot!.getFile(fileId);
+      if (!fileInfo.file_path) return "";
+
+      const ext = path.extname(fileInfo.file_path) || path.extname(originalName || "") || "";
+      const safeName = originalName
+        ? originalName.replace(/[^a-z0-9._-]/gi, "-")
+        : `${prefix}-${Date.now()}${ext}`;
+      const localPath = path.join(mediaDir, safeName);
+
+      const fileUrl = `https://api.telegram.org/file/bot${this.bot!.token}/${fileInfo.file_path}`;
+
+      await new Promise<void>((resolve, reject) => {
+        const file = fs.createWriteStream(localPath);
+        https.get(fileUrl, (response) => {
+          response.pipe(file);
+          file.on("finish", () => { file.close(); resolve(); });
+        }).on("error", (err) => {
+          fs.unlinkSync(localPath);
+          reject(err);
+        });
+      });
+
+      console.log(`[Telegram] Downloaded ${prefix}: ${localPath} (${fs.statSync(localPath).size} bytes)`);
+      return localPath;
+    } catch (err) {
+      console.error(`[Telegram] Failed to download ${prefix}:`, err);
+      return "";
+    }
   }
 
   private async safeSend(chatId: string, text: string): Promise<void> {

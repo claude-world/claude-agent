@@ -2,14 +2,8 @@ import { spawn, execSync, ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import path from "path";
 import fs from "fs";
-import { fileURLToPath } from "url";
 import store from "./db.ts";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// claude-agent root: two levels up from app/server/
-const AGENT_ROOT = path.resolve(__dirname, "../..");
+import { AGENT_ROOT } from "./paths.ts";
 
 // Shared language rules (used by both sendMessage prefix and spawnClaude system prompt)
 const LANG_RULES_FULL: Record<string, string> = {
@@ -303,12 +297,15 @@ You have access to Bash tool. Use curl to call the local API at http://127.0.0.1
 - POST http://127.0.0.1:3456/api/skills/import — add skill (JSON: {name, content})
 - DELETE http://127.0.0.1:3456/api/skills/:name — delete
 - GET http://127.0.0.1:3456/api/skills/export — export all as JSON
+- GET http://127.0.0.1:3456/api/skills/:name/raw — get skill source
+- POST http://127.0.0.1:3456/api/skills/import-bundle — bulk import (JSON: {skills: [{name, content}]})
 
 ### Agents (4 agents)
 - GET http://127.0.0.1:3456/api/agents — list all
 - POST http://127.0.0.1:3456/api/agents/import — add agent (JSON: {name, content})
 - DELETE http://127.0.0.1:3456/api/agents/:name — delete
 - GET http://127.0.0.1:3456/api/agents/export — export all
+- GET http://127.0.0.1:3456/api/agents/:name/raw — get agent source
 
 ### MCP Servers
 - GET http://127.0.0.1:3456/api/mcp — list configured servers
@@ -328,6 +325,7 @@ You have access to Bash tool. Use curl to call the local API at http://127.0.0.1
 - DELETE http://127.0.0.1:3456/api/channels/:id — delete
 - POST http://127.0.0.1:3456/api/channels/:id/start — start bridge
 - POST http://127.0.0.1:3456/api/channels/:id/stop — stop bridge
+- GET http://127.0.0.1:3456/api/channels/status — bridge connection status
 
 ### Scheduled Tasks
 - GET http://127.0.0.1:3456/api/scheduled-tasks — list
@@ -335,6 +333,8 @@ You have access to Bash tool. Use curl to call the local API at http://127.0.0.1
 - PUT http://127.0.0.1:3456/api/scheduled-tasks/:id — update
 - DELETE http://127.0.0.1:3456/api/scheduled-tasks/:id — delete
 - POST http://127.0.0.1:3456/api/scheduled-tasks/:id/run — trigger manually
+- PATCH http://127.0.0.1:3456/api/scheduled-tasks/:id/toggle — enable/disable (JSON: {enabled})
+- GET http://127.0.0.1:3456/api/scheduled-tasks/:id/executions — execution history
 
 ### Project
 - GET http://127.0.0.1:3456/api/project — current project info
@@ -348,6 +348,31 @@ You have access to Bash tool. Use curl to call the local API at http://127.0.0.1
 ### Migration
 - GET http://127.0.0.1:3456/api/migrate/check — check OpenClaw installation
 - POST http://127.0.0.1:3456/api/migrate/run — run migration
+
+### Memory
+- GET http://127.0.0.1:3456/api/memory — list memory files
+- GET http://127.0.0.1:3456/api/memory/:filename — read memory file
+- PUT http://127.0.0.1:3456/api/memory/:filename — update memory file (JSON: {content})
+
+### Projects (Expert Discussion)
+- GET http://127.0.0.1:3456/api/projects — list all projects
+- POST http://127.0.0.1:3456/api/projects — create (JSON: {name, topic, discussion_mode})
+- GET http://127.0.0.1:3456/api/projects/:id — get project detail
+- PUT http://127.0.0.1:3456/api/projects/:id — update project
+- DELETE http://127.0.0.1:3456/api/projects/:id — delete project
+- POST http://127.0.0.1:3456/api/projects/:id/setup-experts — auto-generate experts
+- POST http://127.0.0.1:3456/api/projects/:id/start — start discussion
+- POST http://127.0.0.1:3456/api/projects/:id/conclude — generate conclusion
+- POST http://127.0.0.1:3456/api/projects/:id/abort — stop discussion
+- POST http://127.0.0.1:3456/api/projects/:id/reset — clear and restart
+
+### History & Search
+- GET http://127.0.0.1:3456/api/history?search=keyword&limit=50 — search across sessions
+
+### System
+- GET http://127.0.0.1:3456/api/health — server health check
+- GET http://127.0.0.1:3456/api/export — full data backup (JSON)
+- GET http://127.0.0.1:3456/api/stats — usage statistics
 
 ## Rules
 - ONLY use curl to call the APIs above — never edit files directly

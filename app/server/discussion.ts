@@ -4,13 +4,7 @@ import store from "./db.ts";
 import type { Expert } from "./db.ts";
 import path from "path";
 import fs from "fs";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const AGENT_ROOT =
-  process.env.AGENT_ROOT || path.resolve(__dirname, "../..");
+import { AGENT_ROOT } from "./paths.ts";
 
 // -------------------------------------------------------------------
 // Types

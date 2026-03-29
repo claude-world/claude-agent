@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { AgentSession, CliSession } from "./agent.ts";
 import type { CliType } from "./agent.ts";
 import store from "./db.ts";
+import { AGENT_ROOT } from "./paths.ts";
 
 /**
  * Collects all text output from an AgentSession into a single string.
@@ -156,7 +157,7 @@ class TaskScheduler {
 
       if (cli !== 'claude') {
         // Use CliSession for non-Claude CLIs
-        const cliSession = new CliSession(cli, process.env.AGENT_ROOT || process.cwd());
+        const cliSession = new CliSession(cli, AGENT_ROOT);
         try {
           const output = await cliSession.execute(task.prompt);
           const duration_ms = Date.now() - startedAt;

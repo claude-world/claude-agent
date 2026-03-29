@@ -7,12 +7,11 @@ import {
 } from "discord.js";
 import { AgentSession, CliSession, createSession, type CliType } from "./agent.ts";
 import type { store as StoreType } from "./db.ts";
+import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const AGENT_ROOT = path.resolve(__dirname, "../..");
+import fs from "fs";
+import https from "https";
+import http from "http";
 
 // Discord hard limit: 2000 chars. Keep a small buffer.
 const MAX_MSG_LEN = 1900;
@@ -103,6 +102,34 @@ export class DiscordBridge {
       if (botMention) {
         text = text.replace(botMention, "").trim();
       }
+
+      // Handle attachments (images, files, videos)
+      if (message.attachments.size > 0) {
+        const mediaDir = path.join(AGENT_ROOT, "workspace", "media");
+        fs.mkdirSync(mediaDir, { recursive: true });
+        for (const [, attachment] of message.attachments) {
+          try {
+            const ext = path.extname(attachment.name || "") || "";
+            const safeName = (attachment.name || `discord-${Date.now()}${ext}`).replace(/[^a-z0-9._-]/gi, "-");
+            const localPath = path.join(mediaDir, safeName);
+            const url = attachment.url;
+            await new Promise<void>((resolve, reject) => {
+              const file = fs.createWriteStream(localPath);
+              const getter = url.startsWith("https") ? https : http;
+              getter.get(url, (res) => {
+                res.pipe(file);
+                file.on("finish", () => { file.close(); resolve(); });
+              }).on("error", reject);
+            });
+            const type = attachment.contentType?.split("/")[0] || "file";
+            text += `\n[User sent a ${type}: ${attachment.name}, saved to: ${localPath}]\nAnalyze this file.`;
+            console.log(`[Discord] Downloaded attachment: ${localPath} (${attachment.size} bytes)`);
+          } catch (err) {
+            console.error(`[Discord] Failed to download attachment:`, err);
+          }
+        }
+      }
+
       if (!text) return;
 
       // Get or create session for this user
