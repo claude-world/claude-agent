@@ -102,9 +102,15 @@ export class TelegramBridge {
 
       // /config command: route to config bot session
       if (text.startsWith('/config')) {
-        const configPrompt = text.slice(7).trim();
-        if (!configPrompt) {
-          await this.safeSend(chatId, 'Usage: /config <what you want to configure>\n\nExample: /config show me current settings');
+        const configPrompt = text.slice(7).trim() || 'help';
+        if (configPrompt === 'help' || configPrompt === '/config') {
+          const lang = this.store.getSetting("language") || "en";
+          const helpMsg = lang === "zh-TW"
+            ? `*Settings Assistant*\n\n使用 /config + 你想做的事：\n\n*基本設定*\n/config 顯示目前設定\n/config 改語言為英文\n/config 改模型為 opus\n\n*通訊頻道*\n/config 顯示頻道狀態\n/config 加入用戶 chat\\_id\n\n*API 金鑰*\n/config 顯示所有金鑰\n/config 新增 OpenAI key\n\n*排程任務*\n/config 顯示所有任務\n/config 建立每日簡報\n\n*系統*\n/config 健康檢查\n/config 匯出備份\n/config 使用統計`
+            : lang === "ja"
+            ? `*Settings Assistant*\n\n/config + やりたいこと：\n\n/config 現在の設定を表示\n/config 言語を変更\n/config チャンネル状態\n/config ヘルスチェック`
+            : `*Settings Assistant*\n\nUse /config + what you want:\n\n*Basic*\n/config show current settings\n/config change language to Chinese\n/config switch model to opus\n\n*Channels*\n/config show channel status\n/config add user 12345\n\n*Keys*\n/config show secrets\n/config add OpenAI key\n\n*Tasks*\n/config show scheduled tasks\n/config create daily briefing at 8am\n\n*System*\n/config health check\n/config export backup\n/config show stats`;
+          await this.safeSend(chatId, helpMsg);
           return;
         }
         const configSessionId = await this.getOrCreateConfigSession(chatId);
