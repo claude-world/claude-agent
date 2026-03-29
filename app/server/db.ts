@@ -109,6 +109,34 @@ db.exec(`
     round INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    personality TEXT NOT NULL DEFAULT '',
+    allowed_skills TEXT NOT NULL DEFAULT '[]',
+    language TEXT NOT NULL DEFAULT 'en',
+    reply_style TEXT NOT NULL DEFAULT 'concise',
+    knowledge_context TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS role_assignments (
+    chat_id TEXT PRIMARY KEY,
+    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL DEFAULT 'telegram',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS role_memories (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(chat_id, key)
+  );
 `);
 
 // Indices for performance
@@ -120,7 +148,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled ON scheduled_tasks(enabled);
   CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);
   CREATE INDEX IF NOT EXISTS idx_disc_msg_project ON discussion_messages(project_id);
+  CREATE INDEX IF NOT EXISTS idx_role_assignments_role ON role_assignments(role_id);
+  CREATE INDEX IF NOT EXISTS idx_role_memories_chat ON role_memories(chat_id);
 `);
+
+// Migrations: add new columns to existing tables if they don't exist yet
+try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_chat_id TEXT DEFAULT NULL`); } catch {}
+try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_platform TEXT DEFAULT NULL`); } catch {}
 
 // Types
 export interface Session {
@@ -158,6 +192,8 @@ export interface ScheduledTask {
   schedule: string;
   timezone: string;
   enabled: boolean;
+  delivery_chat_id: string | null;
+  delivery_platform: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -212,6 +248,33 @@ export interface DiscussionMessage {
   content: string;
   round: number;
   created_at: string;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  personality: string;
+  allowed_skills: string[];
+  language: string;
+  reply_style: string;
+  knowledge_context: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleAssignment {
+  chat_id: string;
+  role_id: string;
+  platform: string;
+  created_at: string;
+}
+
+export interface RoleMemory {
+  id: string;
+  chat_id: string;
+  key: string;
+  value: string;
+  updated_at: string;
 }
 
 // Prepared statements
@@ -289,12 +352,12 @@ const stmts = {
     `SELECT * FROM scheduled_tasks WHERE id = ?`
   ),
   insertScheduledTask: db.prepare(
-    `INSERT INTO scheduled_tasks (id, name, prompt, agent, schedule, timezone, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO scheduled_tasks (id, name, prompt, agent, schedule, timezone, enabled, delivery_chat_id, delivery_platform)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   updateScheduledTask: db.prepare(
     `UPDATE scheduled_tasks SET name = ?, prompt = ?, agent = ?, schedule = ?,
-     timezone = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?`
+     timezone = ?, enabled = ?, delivery_chat_id = ?, delivery_platform = ?, updated_at = datetime('now') WHERE id = ?`
   ),
   deleteScheduledTask: db.prepare(
     `DELETE FROM scheduled_tasks WHERE id = ?`
@@ -362,6 +425,41 @@ const stmts = {
   listAllTaskExecutions: db.prepare(
     `SELECT * FROM task_executions ORDER BY started_at DESC LIMIT ?`
   ),
+
+  // Roles
+  listRoles: db.prepare(`SELECT * FROM roles ORDER BY name ASC`),
+  getRole: db.prepare(`SELECT * FROM roles WHERE id = ?`),
+  insertRole: db.prepare(
+    `INSERT INTO roles (id, name, personality, allowed_skills, language, reply_style, knowledge_context)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ),
+  updateRole: db.prepare(
+    `UPDATE roles SET name = ?, personality = ?, allowed_skills = ?, language = ?,
+     reply_style = ?, knowledge_context = ?, updated_at = datetime('now') WHERE id = ?`
+  ),
+  deleteRole: db.prepare(`DELETE FROM roles WHERE id = ?`),
+
+  // Role assignments
+  assignRole: db.prepare(
+    `INSERT OR REPLACE INTO role_assignments (chat_id, role_id, platform) VALUES (?, ?, ?)`
+  ),
+  unassignRole: db.prepare(`DELETE FROM role_assignments WHERE chat_id = ?`),
+  getRoleAssignment: db.prepare(`SELECT * FROM role_assignments WHERE chat_id = ?`),
+  getRoleByChatId: db.prepare(
+    `SELECT r.* FROM roles r JOIN role_assignments ra ON r.id = ra.role_id WHERE ra.chat_id = ?`
+  ),
+  listRoleAssignments: db.prepare(
+    `SELECT ra.*, r.name as role_name FROM role_assignments ra JOIN roles r ON ra.role_id = r.id ORDER BY ra.created_at DESC`
+  ),
+
+  // Role memories
+  setRoleMemory: db.prepare(
+    `INSERT OR REPLACE INTO role_memories (id, chat_id, key, value, updated_at) VALUES (?, ?, ?, ?, datetime('now'))`
+  ),
+  getRoleMemory: db.prepare(`SELECT * FROM role_memories WHERE chat_id = ? AND key = ?`),
+  listRoleMemories: db.prepare(`SELECT * FROM role_memories WHERE chat_id = ? ORDER BY key ASC`),
+  deleteRoleMemory: db.prepare(`DELETE FROM role_memories WHERE chat_id = ? AND key = ?`),
+  clearRoleMemories: db.prepare(`DELETE FROM role_memories WHERE chat_id = ?`),
 };
 
 function parseChannelAccount(row: any): ChannelAccount {
@@ -380,7 +478,15 @@ function parseScheduledTask(row: any): ScheduledTask {
   return {
     ...row,
     enabled: Boolean(row.enabled),
+    delivery_chat_id: row.delivery_chat_id ?? null,
+    delivery_platform: row.delivery_platform ?? null,
   };
+}
+
+function parseRole(row: any): Role {
+  let allowed_skills: string[] = [];
+  try { allowed_skills = JSON.parse(row.allowed_skills || "[]"); } catch { allowed_skills = []; }
+  return { ...row, allowed_skills };
 }
 
 function parseTaskExecution(row: any): TaskExecution {
@@ -549,6 +655,8 @@ export const store = {
     schedule: string;
     timezone?: string;
     enabled?: boolean;
+    delivery_chat_id?: string | null;
+    delivery_platform?: string | null;
   }): ScheduledTask {
     const id = randomUUID();
     stmts.insertScheduledTask.run(
@@ -558,7 +666,9 @@ export const store = {
       data.agent ?? "claude",
       data.schedule,
       data.timezone ?? "Asia/Taipei",
-      data.enabled !== false ? 1 : 0
+      data.enabled !== false ? 1 : 0,
+      data.delivery_chat_id ?? null,
+      data.delivery_platform ?? null
     );
     return parseScheduledTask(stmts.getScheduledTask.get(id));
   },
@@ -572,6 +682,8 @@ export const store = {
       schedule: string;
       timezone: string;
       enabled: boolean;
+      delivery_chat_id: string | null;
+      delivery_platform: string | null;
     }>
   ): ScheduledTask | undefined {
     const existing = stmts.getScheduledTask.get(id) as any;
@@ -583,6 +695,8 @@ export const store = {
       data.schedule ?? existing.schedule,
       data.timezone ?? existing.timezone,
       data.enabled !== undefined ? (data.enabled ? 1 : 0) : existing.enabled,
+      data.delivery_chat_id !== undefined ? data.delivery_chat_id : existing.delivery_chat_id,
+      data.delivery_platform !== undefined ? data.delivery_platform : existing.delivery_platform,
       id
     );
     return parseScheduledTask(stmts.getScheduledTask.get(id));
@@ -831,6 +945,118 @@ export const store = {
     params.push(Math.max(0, Math.min(limit, 500)), offset);
 
     return db.prepare(sql).all(...params) as any[];
+  },
+
+  // Roles
+  listRoles(): Role[] {
+    return (stmts.listRoles.all() as any[]).map(parseRole);
+  },
+
+  getRole(id: string): Role | undefined {
+    const row = stmts.getRole.get(id);
+    if (!row) return undefined;
+    return parseRole(row);
+  },
+
+  createRole(data: {
+    name: string;
+    personality?: string;
+    allowed_skills?: string[];
+    language?: string;
+    reply_style?: string;
+    knowledge_context?: string;
+  }): Role {
+    const id = randomUUID();
+    stmts.insertRole.run(
+      id,
+      data.name,
+      data.personality ?? "",
+      JSON.stringify(data.allowed_skills ?? []),
+      data.language ?? "en",
+      data.reply_style ?? "concise",
+      data.knowledge_context ?? ""
+    );
+    return parseRole(stmts.getRole.get(id));
+  },
+
+  updateRole(
+    id: string,
+    data: Partial<{
+      name: string;
+      personality: string;
+      allowed_skills: string[];
+      language: string;
+      reply_style: string;
+      knowledge_context: string;
+    }>
+  ): Role | undefined {
+    const existing = stmts.getRole.get(id) as any;
+    if (!existing) return undefined;
+    const existingParsed = parseRole(existing);
+    stmts.updateRole.run(
+      data.name ?? existing.name,
+      data.personality ?? existing.personality,
+      JSON.stringify(data.allowed_skills ?? existingParsed.allowed_skills),
+      data.language ?? existing.language,
+      data.reply_style ?? existing.reply_style,
+      data.knowledge_context ?? existing.knowledge_context,
+      id
+    );
+    return parseRole(stmts.getRole.get(id));
+  },
+
+  deleteRole(id: string): boolean {
+    const result = stmts.deleteRole.run(id);
+    return result.changes > 0;
+  },
+
+  // Role assignments
+  assignRole(chat_id: string, role_id: string, platform = "telegram"): RoleAssignment {
+    stmts.assignRole.run(chat_id, role_id, platform);
+    return stmts.getRoleAssignment.get(chat_id) as RoleAssignment;
+  },
+
+  unassignRole(chat_id: string): boolean {
+    const result = stmts.unassignRole.run(chat_id);
+    return result.changes > 0;
+  },
+
+  getRoleAssignment(chat_id: string): RoleAssignment | undefined {
+    return stmts.getRoleAssignment.get(chat_id) as RoleAssignment | undefined;
+  },
+
+  getRoleByChatId(chat_id: string): Role | undefined {
+    const row = stmts.getRoleByChatId.get(chat_id);
+    if (!row) return undefined;
+    return parseRole(row);
+  },
+
+  listRoleAssignments(): any[] {
+    return stmts.listRoleAssignments.all() as any[];
+  },
+
+  // Role memories
+  setRoleMemory(chat_id: string, key: string, value: string): RoleMemory {
+    const id = randomUUID();
+    stmts.setRoleMemory.run(id, chat_id, key, value);
+    return stmts.getRoleMemory.get(chat_id, key) as RoleMemory;
+  },
+
+  getRoleMemory(chat_id: string, key: string): RoleMemory | undefined {
+    return stmts.getRoleMemory.get(chat_id, key) as RoleMemory | undefined;
+  },
+
+  listRoleMemories(chat_id: string): RoleMemory[] {
+    return stmts.listRoleMemories.all(chat_id) as RoleMemory[];
+  },
+
+  deleteRoleMemory(chat_id: string, key: string): boolean {
+    const result = stmts.deleteRoleMemory.run(chat_id, key);
+    return result.changes > 0;
+  },
+
+  clearRoleMemories(chat_id: string): void {
+    stmts.clearRoleMemories.run(chat_id);
   },
 };
 

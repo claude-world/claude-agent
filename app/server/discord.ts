@@ -6,7 +6,7 @@ import {
   TextChannel,
 } from "discord.js";
 import { AgentSession, CliSession, createSession, type CliType } from "./agent.ts";
-import type { store as StoreType } from "./db.ts";
+import type { store as StoreType, Role } from "./db.ts";
 import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
 import fs from "fs";
@@ -132,6 +132,17 @@ export class DiscordBridge {
 
       if (!text) return;
 
+      // Use channel ID for server channels, user ID for DMs
+      const chatKey = isDM ? userId : message.channel.id;
+
+      // Look up role for this chat
+      const role = this.store.getRoleByChatId(chatKey) || undefined;
+
+      // Build per-chat memory map
+      const memories = this.store.listRoleMemories(chatKey);
+      const chatMemory: Record<string, string> = {};
+      for (const m of memories) { chatMemory[m.key] = m.value; }
+
       // Get or create session for this user
       const sessionId = await this.getOrCreateSession(userId, username);
 
@@ -149,7 +160,7 @@ export class DiscordBridge {
       if (!agentSession) {
         const defaultCli = (this.store.getSetting("default_cli") || "claude") as CliType;
         console.log(`[Discord] Creating session for ${userId} with CLI: ${defaultCli}`);
-        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli);
+        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli, role, chatMemory);
         this.agentSessions.set(sessionId, agentSession);
       }
 
@@ -254,6 +265,16 @@ export class DiscordBridge {
 
       await flushPending();
 
+      // Auto-extract memories from assistant response
+      const memoryPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
+      let memMatch;
+      while ((memMatch = memoryPattern.exec(fullResponse)) !== null) {
+        this.store.setRoleMemory(chatKey, memMatch[1], memMatch[2].trim());
+        console.log(`[Discord] Saved memory for chat ${chatKey}: ${memMatch[1]}`);
+      }
+      // Strip memory tags from the displayed response
+      fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
+
       if (!fullResponse.trim()) {
         await this.safeReply(message, "(no response)");
       }
@@ -308,7 +329,7 @@ export class DiscordBridge {
     return session.id;
   }
 
-  private async safeReply(message: Message, text: string): Promise<void> {
+  public async safeReply(message: Message, text: string): Promise<void> {
     try {
       await message.reply(text);
     } catch (err) {
@@ -316,6 +337,18 @@ export class DiscordBridge {
         "[Discord] Failed to reply:",
         err instanceof Error ? err.message : err
       );
+    }
+  }
+
+  public invalidateSession(userId: string) {
+    const sessionId = this.userToSession.get(userId);
+    if (sessionId) {
+      const session = this.agentSessions.get(sessionId);
+      if (session instanceof AgentSession) session.interrupt();
+      else if (session instanceof CliSession) session.abort();
+      this.agentSessions.delete(sessionId);
+      this.userToSession.delete(userId);
+      console.log(`[Discord] Invalidated session for user ${userId}`);
     }
   }
 }

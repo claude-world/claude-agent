@@ -3,6 +3,7 @@ import { createInterface } from "readline";
 import path from "path";
 import fs from "fs";
 import store from "./db.ts";
+import type { Role } from "./db.ts";
 import { AGENT_ROOT } from "./paths.ts";
 
 // Shared language rules (used by both sendMessage prefix and spawnClaude system prompt)
@@ -75,12 +76,16 @@ export class AgentSession {
   private claudeSessionId: string | null = null;
   private pendingMessage: string | null = null;
   private generation = 0; // incremented each time a new process is spawned
+  private role: Role | null = null;
+  private chatMemory: Record<string, string> = {};
   public readonly sessionId: string;
   public readonly cwd: string;
 
-  constructor(sessionId: string, cwd?: string) {
+  constructor(sessionId: string, cwd?: string, role?: Role, chatMemory?: Record<string, string>) {
     this.sessionId = sessionId;
     this.cwd = cwd || AGENT_ROOT;
+    this.role = role || null;
+    this.chatMemory = chatMemory || {};
   }
 
   /**
@@ -88,7 +93,7 @@ export class AgentSession {
    * Prepends current time + language preference as system context.
    */
   sendMessage(content: string) {
-    const lang = store.getSetting("language") || "en";
+    const lang = this.role?.language || store.getSetting("language") || "en";
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const timeStr = now.toLocaleString("en-US", {
@@ -120,24 +125,53 @@ ${LANG_RULES_SHORT[lang] || LANG_RULES_SHORT["en"]}
       this.proc = null;
     }
 
-    // Build full system prompt from CLAUDE.md + language/time rules
+    // Build full system prompt from role config (or CLAUDE.md) + language/time rules
     // Using --system-prompt (replaces default) instead of --append-system-prompt
     // so the assistant identifies as a personal assistant, NOT a coding assistant
-    const langSetting = store.getSetting("language") || "en";
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     const parts: string[] = [];
 
-    // Load CLAUDE.md as the primary identity
-    const claudeMdPath = path.join(this.cwd, "CLAUDE.md");
-    if (fs.existsSync(claudeMdPath)) {
-      parts.push(fs.readFileSync(claudeMdPath, "utf8"));
+    if (this.role) {
+      // Role-based system prompt
+      parts.push(`# Identity\nYou are ${this.role.name}.\n`);
+      if (this.role.personality) {
+        parts.push(`# Personality\n${this.role.personality}\n`);
+      }
+      // Inject per-chat memory
+      const memEntries = Object.entries(this.chatMemory);
+      if (memEntries.length > 0) {
+        parts.push(`# Conversation Memory (this chat only)`);
+        for (const [k, v] of memEntries) {
+          parts.push(`- ${k}: ${v}`);
+        }
+        parts.push('');
+      }
+      if (this.role.knowledge_context) {
+        parts.push(`# Knowledge\n${this.role.knowledge_context}\n`);
+      }
+      parts.push(`# Reply Style\nReply in a ${this.role.reply_style} manner.\n`);
+      if (this.role.allowed_skills.length > 0) {
+        parts.push(`# Available Skills\nYou may use these skills: ${this.role.allowed_skills.map(s => '/' + s).join(', ')}\n`);
+      }
+      parts.push(`# Memory Instructions\nWhen you learn something important in this conversation, output it as:\n[SAVE_MEMORY] key: value\nThis will be saved and remembered for future conversations in this chat.\n`);
+      // Language from role
+      const langSetting = this.role.language;
+      parts.push(`# Language Rule (HIGHEST PRIORITY)`);
+      parts.push(LANG_RULES_FULL[langSetting] || LANG_RULES_FULL["en"]);
+    } else {
+      // Default: load CLAUDE.md
+      const claudeMdPath = path.join(this.cwd, "CLAUDE.md");
+      if (fs.existsSync(claudeMdPath)) {
+        parts.push(fs.readFileSync(claudeMdPath, "utf8"));
+      }
+      const langSetting = store.getSetting("language") || "en";
+      parts.push(`\n# Language Rule (HIGHEST PRIORITY)`);
+      parts.push(LANG_RULES_FULL[langSetting] || LANG_RULES_FULL["en"]);
     }
 
-    // Append language + time rules
-    parts.push(`\n# Language Rule (HIGHEST PRIORITY)`);
-    parts.push(LANG_RULES_FULL[langSetting] || LANG_RULES_FULL["en"]);
+    // Time always appended
     parts.push(`\n# Current Time`);
     parts.push(`${now.toLocaleString("en-US", { timeZone: tz, hour12: false })} (${tz})`);
 
@@ -368,10 +402,28 @@ Schedule format: cron (minute hour day month weekday). Examples: "0 8 * * *" = d
 - POST /api/projects/:id/abort — stop
 - DELETE /api/projects/:id — delete
 
+### 11. Roles (Per-Chat Personality)
+"Create a role" / "Assign role to this chat" / "Show roles" / "View chat memory"
+- GET http://127.0.0.1:3456/api/roles — list all roles
+- POST http://127.0.0.1:3456/api/roles — create {name, personality, allowed_skills: ["weather","spotify"], language: "en"|"zh-TW"|"ja", reply_style: "concise"|"detailed"|"casual"|"formal", knowledge_context: "markdown text"}
+- PUT http://127.0.0.1:3456/api/roles/:id — update
+- DELETE http://127.0.0.1:3456/api/roles/:id — delete
+- POST http://127.0.0.1:3456/api/roles/:id/assign — bind to chat {chat_id, platform: "telegram"|"discord"}
+- DELETE http://127.0.0.1:3456/api/roles/:id/assign/:chatId — unbind
+- GET http://127.0.0.1:3456/api/roles/assignments — list all bindings
+- GET http://127.0.0.1:3456/api/roles/by-chat/:chatId — check role for a chat
+- GET http://127.0.0.1:3456/api/roles/memory/:chatId — view chat memories
+- PUT http://127.0.0.1:3456/api/roles/memory/:chatId/:key — set memory {value: "..."}
+- DELETE http://127.0.0.1:3456/api/roles/memory/:chatId — clear all memories
+
+Guide: Each Telegram group or Discord channel can have its own personality, language, and memory.
+To set up: 1) Create a role, 2) Assign it to a chat_id.
+The current chat_id is shown in [Current chat_id: ...] above.
+
 ## How to Respond
 
 When user says "help" or asks what they can do:
-- List the 10 categories above with a one-line description each
+- List the 11 categories above with a one-line description each
 - Ask which area they want to configure
 
 When user wants to change something:
@@ -582,10 +634,12 @@ export class CliSession {
 export function createSession(
   sessionId: string,
   cwd: string,
-  cli: CliType = "claude"
+  cli: CliType = "claude",
+  role?: Role,
+  chatMemory?: Record<string, string>
 ): AgentSession | CliSession {
   if (cli === "claude") {
-    return new AgentSession(sessionId, cwd);
+    return new AgentSession(sessionId, cwd, role, chatMemory);
   }
   return new CliSession(cli, cwd);
 }

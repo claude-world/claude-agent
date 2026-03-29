@@ -15,6 +15,7 @@ import ScheduledTasksPage from './components/ScheduledTasksPage';
 import SecretsPage from './components/SecretsPage';
 import ConfigBotPage from './components/ConfigBotPage';
 import ProjectsPage from './components/ProjectsPage';
+import RolesPage from './components/RolesPage';
 
 export default function App() {
   const [activePage, setActivePage] = useState<Page>('chat');
@@ -72,6 +73,8 @@ export default function App() {
         return <ConfigBotPage key={locale} />;
       case 'projects':
         return <ProjectsPage key={locale} />;
+      case 'roles':
+        return <RolesPage key={locale} />;
       default:
         return <ChatWindow />;
     }

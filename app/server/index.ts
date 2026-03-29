@@ -1615,6 +1615,126 @@ app.get("/api/projects/:id/messages", (req, res) => {
 });
 
 // -------------------------------------------------------------------
+// REST: Roles (Per-Chat Personality)
+// IMPORTANT: specific routes must come BEFORE generic /:id route
+// -------------------------------------------------------------------
+
+// GET /api/roles/assignments — list all role-chat bindings
+app.get("/api/roles/assignments", (_req, res) => {
+  try { res.json(store.listRoleAssignments()); }
+  catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// GET /api/roles/by-chat/:chatId — check role assigned to a chat
+app.get("/api/roles/by-chat/:chatId", (req, res) => {
+  try {
+    const role = store.getRoleByChatId(req.params.chatId);
+    if (!role) return res.json({ role: null });
+    res.json(role);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// GET /api/roles/memory/:chatId — list all role memories for a chat
+app.get("/api/roles/memory/:chatId", (req, res) => {
+  try { res.json(store.listRoleMemories(req.params.chatId)); }
+  catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// PUT /api/roles/memory/:chatId/:key — set a role memory value
+app.put("/api/roles/memory/:chatId/:key", (req, res) => {
+  try {
+    const { value } = req.body ?? {};
+    if (typeof value !== "string") return res.status(400).json({ error: "value required" });
+    store.setRoleMemory(req.params.chatId, req.params.key, value);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// DELETE /api/roles/memory/:chatId/:key — delete a specific role memory
+app.delete("/api/roles/memory/:chatId/:key", (req, res) => {
+  try {
+    store.deleteRoleMemory(req.params.chatId, req.params.key);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// DELETE /api/roles/memory/:chatId — clear all role memories for a chat
+app.delete("/api/roles/memory/:chatId", (req, res) => {
+  try {
+    store.clearRoleMemories(req.params.chatId);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// GET /api/roles — list all roles
+app.get("/api/roles", (_req, res) => {
+  try { res.json(store.listRoles()); }
+  catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// POST /api/roles — create a new role
+app.post("/api/roles", (req, res) => {
+  try {
+    const { name, personality, allowed_skills, language, reply_style, knowledge_context } = req.body ?? {};
+    if (!name) return res.status(400).json({ error: "name required" });
+    const role = store.createRole({ name, personality, allowed_skills, language, reply_style, knowledge_context });
+    res.status(201).json(role);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// GET /api/roles/:id — get a single role
+app.get("/api/roles/:id", (req, res) => {
+  try {
+    const role = store.getRole(req.params.id);
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    res.json(role);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// PUT /api/roles/:id — update a role
+app.put("/api/roles/:id", (req, res) => {
+  try {
+    const role = store.updateRole(req.params.id, req.body ?? {});
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    res.json(role);
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// DELETE /api/roles/:id — delete a role
+app.delete("/api/roles/:id", (req, res) => {
+  try {
+    const ok = store.deleteRole(req.params.id);
+    if (!ok) return res.status(404).json({ error: "Role not found" });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// POST /api/roles/:id/assign — assign a role to a chat
+app.post("/api/roles/:id/assign", (req, res) => {
+  try {
+    const { chat_id, platform } = req.body ?? {};
+    if (!chat_id) return res.status(400).json({ error: "chat_id required" });
+    const role = store.getRole(req.params.id);
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    store.assignRole(chat_id, req.params.id, platform || 'telegram');
+    // Invalidate in-memory session so it picks up new role
+    if (bridges.telegram) (bridges.telegram as any).invalidateSession?.(chat_id);
+    if (bridges.discord) (bridges.discord as any).invalidateSession?.(chat_id);
+    res.json({ success: true, chat_id, role_id: req.params.id });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// DELETE /api/roles/:id/assign/:chatId — unassign a role from a chat
+app.delete("/api/roles/:id/assign/:chatId", (req, res) => {
+  try {
+    store.unassignRole(req.params.chatId);
+    if (bridges.telegram) (bridges.telegram as any).invalidateSession?.(req.params.chatId);
+    if (bridges.discord) (bridges.discord as any).invalidateSession?.(req.params.chatId);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// -------------------------------------------------------------------
 // REST: Health Check
 // -------------------------------------------------------------------
 app.get("/api/health", (_req, res) => {
@@ -2087,6 +2207,14 @@ server.listen(PORT, HOST, () => {
   // Start scheduled task cron jobs
   try {
     scheduler.start();
+    scheduler.setDeliveryCallback((chatId, platform, text) => {
+      if (platform === 'telegram' && bridges.telegram) {
+        (bridges.telegram as any).safeSend?.(chatId, text);
+      } else if (platform === 'discord' && bridges.discord) {
+        // Discord needs a channel to send to — store as env or use DM
+        console.log(`[Scheduler] Discord delivery to ${chatId}: ${text.slice(0, 100)}...`);
+      }
+    });
   } catch (err) {
     console.error("[Scheduler] Auto-start error:", err);
   }

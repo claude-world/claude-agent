@@ -25,7 +25,8 @@ const NAV_ITEMS: NavItem[] = [
   { page: 'tasks', labelKey: 'nav.tasks', icon: '⏰' },
   { page: 'config', labelKey: 'nav.config', icon: '🛠️' },
   { page: 'settings', labelKey: 'nav.settings', icon: '⚙️' },
-  { page: 'channels', labelKey: 'nav.channels', icon: '📡' }
+  { page: 'channels', labelKey: 'nav.channels', icon: '📡' },
+  { page: 'roles', labelKey: 'nav.roles', icon: '🎭' }
 ];
 
 export default function Sidebar({ activePage, onNavigate, sessionCount }: SidebarProps) {

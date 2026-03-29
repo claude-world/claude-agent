@@ -197,9 +197,39 @@ export interface ToolUseContent {
   input: Record<string, unknown>;
 }
 
+// ---- Role types ----
+
+export interface Role {
+  id: string;
+  name: string;
+  personality: string;
+  allowed_skills: string[];
+  language: string;
+  reply_style: string;
+  knowledge_context: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleAssignment {
+  chat_id: string;
+  role_id: string;
+  role_name?: string;
+  platform: string;
+  created_at: string;
+}
+
+export interface RoleMemory {
+  id: string;
+  chat_id: string;
+  key: string;
+  value: string;
+  updated_at: string;
+}
+
 // ---- Page navigation ----
 
-export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects';
+export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects' | 'roles';
 
 export interface McpServerConfig {
   type?: string;

@@ -44,6 +44,11 @@ async function collectSessionOutput(
 class TaskScheduler {
   private jobs = new Map<string, cron.ScheduledTask>();
   private inFlight = new Set<string>();
+  private deliveryCallback: ((chatId: string, platform: string, text: string) => void) | null = null;
+
+  setDeliveryCallback(cb: (chatId: string, platform: string, text: string) => void) {
+    this.deliveryCallback = cb;
+  }
 
   /**
    * Load all enabled tasks from the database and register cron jobs.
@@ -170,6 +175,12 @@ class TaskScheduler {
           console.log(
             `[Scheduler] Task ${taskId} (${cli}) completed in ${duration_ms}ms`
           );
+          // Deliver output to chat if configured
+          const taskData = store.getScheduledTask(taskId);
+          if (taskData?.delivery_chat_id && output && this.deliveryCallback) {
+            const message = `📋 *${taskData.name}*\n\n${output}`.slice(0, 4000);
+            this.deliveryCallback(taskData.delivery_chat_id, taskData.delivery_platform || 'telegram', message);
+          }
         } catch (err) {
           const duration_ms = Date.now() - startedAt;
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -202,6 +213,13 @@ class TaskScheduler {
         console.log(
           `[Scheduler] Task ${taskId} completed in ${duration_ms}ms, cost=$${cost_usd ?? 0}`
         );
+
+        // Deliver output to chat if configured
+        const taskData = store.getScheduledTask(taskId);
+        if (taskData?.delivery_chat_id && output && this.deliveryCallback) {
+          const message = `📋 *${taskData.name}*\n\n${output}`.slice(0, 4000);
+          this.deliveryCallback(taskData.delivery_chat_id, taskData.delivery_platform || 'telegram', message);
+        }
       } catch (err) {
         const duration_ms = Date.now() - startedAt;
         const errorMsg = err instanceof Error ? err.message : String(err);

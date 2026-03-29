@@ -1,6 +1,6 @@
 import TelegramBot from "node-telegram-bot-api";
 import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT, type CliType } from "./agent.ts";
-import type { store as StoreType } from "./db.ts";
+import type { store as StoreType, Role } from "./db.ts";
 import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
 import fs from "fs";
@@ -100,6 +100,24 @@ export class TelegramBridge {
         return;
       }
 
+      // /role command: show current chat's role info
+      if (text.startsWith('/role')) {
+        const currentRole = this.store.getRoleByChatId(chatId);
+        if (!currentRole) {
+          await this.safeSend(chatId, 'No role assigned to this chat.\nUse /config to create and assign roles.');
+        } else {
+          const memCount = this.store.listRoleMemories(chatId).length;
+          await this.safeSend(chatId,
+            `*${currentRole.name}*\n` +
+            `Language: ${currentRole.language}\n` +
+            `Style: ${currentRole.reply_style}\n` +
+            `Skills: ${currentRole.allowed_skills.length > 0 ? currentRole.allowed_skills.join(', ') : 'all'}\n` +
+            `Memories: ${memCount} entries`
+          );
+        }
+        return;
+      }
+
       // /config command: route to config bot session
       if (text.startsWith('/config')) {
         const configPrompt = text.slice(7).trim() || 'help';
@@ -127,7 +145,7 @@ export class TelegramBridge {
         this.store.addMessage(configSessionId, { role: "user", content: configPrompt });
 
         if (configSession instanceof AgentSession) {
-          const enrichedPrompt = `${CONFIG_BOT_PROMPT}\n\nUser request: ${configPrompt}`;
+          const enrichedPrompt = `${CONFIG_BOT_PROMPT}\n\n[Current chat_id: ${chatId}]\n[Current platform: telegram]\n\nUser request: ${configPrompt}`;
           (configSession as AgentSession).sendMessage(enrichedPrompt);
 
           let fullResponse = "";
@@ -189,6 +207,16 @@ export class TelegramBridge {
           }
 
           await flushPending();
+
+          // Auto-extract memories from config response
+          const configMemPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
+          let configMemMatch;
+          while ((configMemMatch = configMemPattern.exec(fullResponse)) !== null) {
+            this.store.setRoleMemory(chatId, configMemMatch[1], configMemMatch[2].trim());
+            console.log(`[Telegram] Saved memory for chat ${chatId}: ${configMemMatch[1]}`);
+          }
+          fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
+
           if (!fullResponse.trim()) await this.safeSend(chatId, "(no response)");
           if (fullResponse) {
             this.store.addMessage(configSessionId, { role: "assistant", content: fullResponse });
@@ -196,6 +224,14 @@ export class TelegramBridge {
         }
         return;
       }
+
+      // Look up role for this chat
+      const role = this.store.getRoleByChatId(chatId) || undefined;
+
+      // Build per-chat memory map
+      const memories = this.store.listRoleMemories(chatId);
+      const chatMemory: Record<string, string> = {};
+      for (const m of memories) { chatMemory[m.key] = m.value; }
 
       // Get or create a DB session for this chat
       const sessionId = await this.getOrCreateSession(chatId);
@@ -212,7 +248,7 @@ export class TelegramBridge {
       if (!agentSession) {
         const defaultCli = (this.store.getSetting("default_cli") || "claude") as CliType;
         console.log(`[Telegram] Creating session for chat ${chatId} with CLI: ${defaultCli}`);
-        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli);
+        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli, role, chatMemory);
         this.agentSessions.set(sessionId, agentSession);
       }
 
@@ -311,6 +347,16 @@ export class TelegramBridge {
 
       // Flush any remaining text
       await flushPending();
+
+      // Auto-extract memories from assistant response
+      const memoryPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
+      let memMatch;
+      while ((memMatch = memoryPattern.exec(fullResponse)) !== null) {
+        this.store.setRoleMemory(chatId, memMatch[1], memMatch[2].trim());
+        console.log(`[Telegram] Saved memory for chat ${chatId}: ${memMatch[1]}`);
+      }
+      // Strip memory tags from the displayed response
+      fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
 
       // If agent produced nothing, send a fallback
       if (!fullResponse.trim()) {
@@ -481,7 +527,7 @@ export class TelegramBridge {
     }
   }
 
-  private async safeSend(chatId: string, text: string): Promise<void> {
+  public async safeSend(chatId: string, text: string): Promise<void> {
     try {
       await this.bot!.sendMessage(chatId, text);
     } catch (err) {
@@ -489,6 +535,18 @@ export class TelegramBridge {
         `[Telegram] Failed to send message to ${chatId}:`,
         err instanceof Error ? err.message : err
       );
+    }
+  }
+
+  public invalidateSession(chatId: string) {
+    const sessionId = this.chatToSession.get(chatId);
+    if (sessionId) {
+      const session = this.agentSessions.get(sessionId);
+      if (session instanceof AgentSession) session.interrupt();
+      else if (session instanceof CliSession) session.abort();
+      this.agentSessions.delete(sessionId);
+      this.chatToSession.delete(chatId);
+      console.log(`[Telegram] Invalidated session for chat ${chatId}`);
     }
   }
 }
