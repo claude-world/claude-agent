@@ -43,7 +43,7 @@ export class TelegramBridge {
    * Start polling for messages.
    * @param token     Telegram bot token
    * @param allowedUsers  Optional list of allowed usernames/chat_ids (strings).
-   *                      If empty, all users are allowed.
+   *                      If empty or not provided, all users are blocked until admin adds them.
    */
   start(token: string, allowedUsers?: string[]) {
     if (this.bot) {
@@ -163,6 +163,7 @@ export class TelegramBridge {
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             pendingText = `Error: ${errorMsg}`;
+            fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
             this.agentSessions.delete(configSessionId);
           } finally {
             if (typingInterval) clearInterval(typingInterval);
@@ -283,6 +284,7 @@ export class TelegramBridge {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[Telegram] Agent error for chat ${chatId}:`, errorMsg);
         pendingText = `Error: ${errorMsg}`;
+        fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
         this.agentSessions.delete(sessionId);
       } finally {
         if (typingInterval) clearInterval(typingInterval);

@@ -4,7 +4,9 @@ import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { fileURLToPath } from "url";
+import { timingSafeEqual } from "crypto";
 import store from "./db.ts";
 import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT } from "./agent.ts";
 import type { CliType } from "./agent.ts";
@@ -89,14 +91,41 @@ console.log(`[Server] AGENT_ROOT: ${AGENT_ROOT}`);
 
 // Security: validate that a path is within user's home directory
 function validatePath(targetPath: string): string {
-  const home = process.env.HOME || require("os").homedir();
+  const home = process.env.HOME || os.homedir();
+  if (!home || !path.isAbsolute(home)) {
+    throw new Error("Cannot determine home directory.");
+  }
   // Block relative paths and traversal
   if (targetPath.includes("..")) {
     throw new Error("Path traversal (..) is not allowed.");
   }
-  const resolved = path.resolve(targetPath.replace(/^~/, home));
-  if (!resolved.startsWith(home)) {
+  const expanded = targetPath.replace(/^~/, home);
+  // Require absolute path after tilde expansion
+  if (!path.isAbsolute(expanded)) {
+    throw new Error("Path must be absolute (or start with ~).");
+  }
+  const resolved = path.resolve(expanded);
+  // Use home + sep to prevent prefix attacks (/home/user matching /home/username-evil)
+  if (!resolved.startsWith(home + path.sep) && resolved !== home) {
     throw new Error(`Path must be within home directory. Got: ${resolved}`);
+  }
+  // Check symlink resolution: walk up to find the deepest existing ancestor
+  // This prevents symlink parents from escaping the home directory
+  let checkPath = resolved;
+  while (checkPath !== path.dirname(checkPath)) {
+    try {
+      const real = fs.realpathSync(checkPath);
+      if (!real.startsWith(home + path.sep) && real !== home) {
+        throw new Error("Symlink traversal detected.");
+      }
+      break; // found an existing path, all ancestors are also valid
+    } catch (e: any) {
+      if (e.code === "ENOENT") {
+        checkPath = path.dirname(checkPath); // walk up
+        continue;
+      }
+      throw e;
+    }
   }
   return resolved;
 }
@@ -112,6 +141,32 @@ const ALLOWED_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
 ];
+
+// -------------------------------------------------------------------
+// Simple in-memory rate limiter
+// -------------------------------------------------------------------
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT = { maxRequests: 30, windowMs: 60_000 }; // 30 req/min
+
+function checkRateLimit(key: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + RATE_LIMIT.windowMs });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT.maxRequests) return false;
+  entry.count++;
+  return true;
+}
+
+// Clean up stale rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap) {
+    if (now > entry.resetAt) rateLimitMap.delete(key);
+  }
+}, 300_000).unref();
 
 // Extend WebSocket with session tracking
 interface WSClient extends WebSocket {
@@ -139,12 +194,18 @@ const activeSessions = new Map<string, ActiveSession>();
 function getOrCreateActive(sessionId: string, cli: CliType = 'claude'): ActiveSession | null {
   if (activeSessions.has(sessionId)) {
     const existing = activeSessions.get(sessionId)!;
-    // If CLI changed, recreate the session with new CLI
+    // If CLI changed, recreate the session with new CLI but keep subscribers
     if (existing.cli !== cli) {
+      const oldSubscribers = existing.subscribers;
       existing.agent instanceof AgentSession
         ? (existing.agent as AgentSession).interrupt()
         : (existing.agent as CliSession).abort();
+      // Re-create with transferred subscribers below
       activeSessions.delete(sessionId);
+      const agent = createSession(sessionId, AGENT_ROOT, cli);
+      const active: ActiveSession = { agent, subscribers: oldSubscribers, isListening: false, cli };
+      activeSessions.set(sessionId, active);
+      return active;
     } else {
       return existing;
     }
@@ -207,7 +268,8 @@ async function startListening(sessionId: string, active: ActiveSession, pendingC
     return;
   }
 
-  // AgentSession: streaming SDK
+  // AgentSession: streaming via CLI subprocess
+  // Each sendMessage() spawns a new CLI process; getOutputStream() reads its output
   try {
     for await (const message of (active.agent as AgentSession).getOutputStream()) {
       handleSDKMessage(sessionId, active, message);
@@ -309,9 +371,12 @@ if (fs.existsSync(distDir)) {
 // -------------------------------------------------------------------
 // REST: Sessions
 // -------------------------------------------------------------------
-app.get("/api/sessions", (_req, res) => {
+app.get("/api/sessions", (req, res) => {
   try {
-    res.json(store.listSessions());
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const sessions = store.listSessions(limit, offset);
+    res.json(sessions);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -342,7 +407,11 @@ app.get("/api/sessions/:id/messages", (req, res) => {
   try {
     const session = store.getSession(req.params.id);
     if (!session) return res.status(404).json({ error: "Session not found" });
-    res.json(store.getMessages(req.params.id));
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const messages = store.getMessages(req.params.id, limit, offset);
+    const total = store.countMessages(req.params.id);
+    res.json({ messages, total, limit, offset });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -1267,8 +1336,12 @@ app.patch("/api/channels/:id", (req, res) => {
       allowed_users: allowed_users ?? acct.allowed_users,
       enabled: enabled !== undefined ? enabled : acct.enabled,
     });
-    // Restart bridge to pick up new allowlist
-    restartBridge(acct.platform as "telegram" | "discord");
+    // Restart or stop bridge depending on enabled state
+    if (updated.enabled) {
+      restartBridge(acct.platform as "telegram" | "discord");
+    } else {
+      stopBridge(acct.platform as "telegram" | "discord");
+    }
     res.json({ ...updated, bot_token: "***" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -1540,6 +1613,189 @@ app.get("/api/projects/:id/messages", (req, res) => {
 });
 
 // -------------------------------------------------------------------
+// REST: Health Check
+// -------------------------------------------------------------------
+app.get("/api/health", (_req, res) => {
+  const uptime = process.uptime();
+  const mem = process.memoryUsage();
+  res.json({
+    status: "ok",
+    version: "1.3.0",
+    uptime_seconds: Math.floor(uptime),
+    memory_mb: Math.floor(mem.rss / 1024 / 1024),
+    active_sessions: activeSessions.size,
+    bridges: {
+      telegram: bridges.telegram !== null,
+      discord: bridges.discord !== null,
+    },
+  });
+});
+
+// -------------------------------------------------------------------
+// REST: Export / Backup
+// -------------------------------------------------------------------
+app.get("/api/export", (_req, res) => {
+  try {
+    const sessions = store.listAllSessions();
+    const allMessages: Record<string, any[]> = {};
+    for (const s of sessions) {
+      allMessages[s.id] = store.getAllMessages(s.id);
+    }
+    const rawSettings = store.getAllSettings();
+    const { webhook_secret, ...safeSettings } = rawSettings;
+    const data = {
+      exported_at: new Date().toISOString(),
+      version: "1.3.0",
+      sessions,
+      messages: allMessages,
+      settings: safeSettings,
+      scheduled_tasks: store.listScheduledTasks(),
+      projects: store.listProjects(),
+      channels: store.listChannelAccounts().map((a) => ({
+        ...a,
+        bot_token: "***",
+      })),
+    };
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=claude-agent-backup-${new Date().toISOString().slice(0, 10)}.json`
+    );
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// -------------------------------------------------------------------
+// REST: Usage Stats
+// -------------------------------------------------------------------
+app.get("/api/stats", (_req, res) => {
+  try {
+    const sessionCount = store.countSessions();
+    const executions = store.listTaskExecutions(undefined, 1000);
+    const totalCost = executions.reduce(
+      (sum, e) => sum + (e.cost_usd ?? 0),
+      0
+    );
+    const successCount = executions.filter((e) => e.status === "success").length;
+    const errorCount = executions.filter((e) => e.status === "error").length;
+
+    res.json({
+      sessions: {
+        total: sessionCount,
+        active: activeSessions.size,
+      },
+      scheduled_tasks: {
+        total_executions: executions.length,
+        successful: successCount,
+        failed: errorCount,
+        total_cost_usd: Math.round(totalCost * 100) / 100,
+      },
+      uptime_seconds: Math.floor(process.uptime()),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// -------------------------------------------------------------------
+// REST: Webhook Channel (inbound)
+// -------------------------------------------------------------------
+app.post("/api/webhook", async (req, res) => {
+  try {
+    const { message, sender, channel, secret } = req.body ?? {};
+    if (!message) {
+      return res.status(400).json({ error: "message required" });
+    }
+
+    // Rate limit webhooks
+    const senderKey = sender || channel || "webhook";
+    if (!checkRateLimit(`webhook:${senderKey}`)) {
+      return res.status(429).json({ error: "Rate limit exceeded" });
+    }
+
+    // Optional auth: if webhook_secret is set, require timing-safe comparison
+    const webhookSecret = store.getSetting("webhook_secret");
+    if (webhookSecret) {
+      const a = Buffer.from(String(secret || ""));
+      const b = Buffer.from(webhookSecret);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return res.status(401).json({ error: "Invalid webhook secret" });
+      }
+    }
+
+    // Create or reuse a session for this webhook sender
+    const sessionTitle = `Webhook:${senderKey}`;
+    let session = store.findSessionByTitle(sessionTitle);
+    if (!session) {
+      session = store.createSession(sessionTitle);
+    }
+
+    // Create agent session and send message
+    const defaultCli = (store.getSetting("default_cli") as CliType) || "claude";
+    const active = getOrCreateActive(session.id, defaultCli);
+    if (!active) {
+      return res.status(500).json({ error: "Failed to create session" });
+    }
+
+    // Prevent concurrent execution on the same session
+    if (active.isListening) {
+      return res.status(429).json({ error: "Session is busy processing a previous message" });
+    }
+
+    // Lock immediately to prevent concurrent requests
+    active.isListening = true;
+
+    store.addMessage(session.id, { role: "user", content: message });
+
+    try {
+      if (active.agent instanceof AgentSession) {
+        (active.agent as AgentSession).sendMessage(message);
+
+        // Collect response
+        let response = "";
+        try {
+          for await (const msg of (active.agent as AgentSession).getOutputStream()) {
+            if (msg.type === "assistant") {
+              const content = msg.message?.content;
+              if (typeof content === "string") response += content;
+              else if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === "text" && block.text) response += block.text;
+                }
+              }
+            } else if (msg.type === "result") break;
+          }
+        } catch (err) {
+          response = `Error: ${err instanceof Error ? err.message : String(err)}`;
+        }
+
+        store.addMessage(session.id, { role: "assistant", content: response });
+        res.json({
+          session_id: session.id,
+          response: response || "(no response)",
+        });
+      } else {
+        // CliSession
+        try {
+          const output = await (active.agent as CliSession).execute(message);
+          store.addMessage(session.id, { role: "assistant", content: output });
+          res.json({ session_id: session.id, response: output });
+        } catch (err) {
+          res.status(500).json({
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } finally {
+      active.isListening = false;
+    }
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// -------------------------------------------------------------------
 // HTTP server + WebSocket
 // -------------------------------------------------------------------
 const server = createServer(app);
@@ -1592,7 +1848,9 @@ wss.on("connection", (ws: WSClient) => {
             if (prev) prev.subscribers.delete(ws);
           }
 
-          const active = getOrCreateActive(msg.sessionId);
+          // Use existing session's CLI if already active, otherwise default
+          const existingCli = activeSessions.get(msg.sessionId)?.cli;
+          const active = getOrCreateActive(msg.sessionId, existingCli);
           if (!active) {
             ws.send(
               JSON.stringify({ type: "error", error: "Session not found" })
@@ -1603,11 +1861,13 @@ wss.on("connection", (ws: WSClient) => {
           ws.sessionId = msg.sessionId;
           active.subscribers.add(ws);
 
-          const messages = store.getMessages(msg.sessionId);
+          const messages = store.getMessages(msg.sessionId, 100, 0);
+          const total = store.countMessages(msg.sessionId);
           ws.send(
             JSON.stringify({
               type: "history",
               messages,
+              total,
               running: active.isListening,
             })
           );
@@ -1617,6 +1877,12 @@ wss.on("connection", (ws: WSClient) => {
         case "chat": {
           if (!msg.content?.trim()) {
             ws.send(JSON.stringify({ type: "error", error: "Empty message" }));
+            break;
+          }
+
+          // Rate limit check
+          if (!checkRateLimit(ws.sessionId || "anon")) {
+            ws.send(JSON.stringify({ type: "error", error: "Rate limit exceeded. Please wait before sending more messages." }));
             break;
           }
 
@@ -1729,7 +1995,19 @@ wss.on("connection", (ws: WSClient) => {
   });
 });
 
-// Heartbeat: detect dead connections
+// Session TTL: clean up stale in-memory sessions every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, active] of activeSessions) {
+    if (active.subscribers.size === 0 && !active.isListening) {
+      // No subscribers and not actively running — clean up
+      try { removeActive(id); } catch {}
+      console.log(`[SessionTTL] Cleaned up idle session ${id.slice(0, 8)}`);
+    }
+  }
+}, 600_000).unref();
+
+// Heartbeat: detect dead connections (unref so it doesn't block process exit)
 const heartbeat = setInterval(() => {
   wss.clients.forEach((ws) => {
     const client = ws as WSClient;
@@ -1740,11 +2018,12 @@ const heartbeat = setInterval(() => {
     client.isAlive = false;
     client.ping();
   });
-}, 30_000);
+}, 30_000).unref();
 
 wss.on("close", () => {
   clearInterval(heartbeat);
 });
+
 
 // Prevent stray SDK errors from crashing the process
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {

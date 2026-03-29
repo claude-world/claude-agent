@@ -188,6 +188,15 @@ export interface DiscussionMessage {
   created_at: string;
 }
 
+// ---- Tool use types ----
+
+export interface ToolUseContent {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
 // ---- Page navigation ----
 
 export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects';

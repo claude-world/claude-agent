@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import type { Language, ModelDefault } from '../types';
+import { useState, useEffect } from 'react';
+import type { Language, ModelDefault, McpServer } from '../types';
 import { t, setLocale as setGlobalLocale } from '../i18n';
 
 const LANGUAGES: { value: Language; label: string }[] = [
@@ -72,6 +72,7 @@ export default function SettingsPage({ onLocaleChange }: SettingsPageProps) {
   const [projectStatus, setProjectStatus] = useState<{ has_claude_md: boolean; has_skills: boolean; has_memory: boolean } | null>(null);
   const [initPath, setInitPath] = useState('');
   const [initStatus, setInitStatus] = useState('');
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -398,7 +399,6 @@ function CliDetector() {
 function MigrateSection() {
   const [status, setStatus] = useState<'idle' | 'checking' | 'ready' | 'running' | 'done' | 'not-found'>('idle');
   const [output, setOutput] = useState('');
-  const wsRef = useRef<WebSocket | null>(null);
 
   const checkOpenclaw = async () => {
     setStatus('checking');

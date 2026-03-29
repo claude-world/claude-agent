@@ -42,6 +42,7 @@ async function collectSessionOutput(
 
 class TaskScheduler {
   private jobs = new Map<string, cron.ScheduledTask>();
+  private inFlight = new Set<string>();
 
   /**
    * Load all enabled tasks from the database and register cron jobs.
@@ -63,7 +64,11 @@ class TaskScheduler {
    */
   stop() {
     for (const [id, job] of this.jobs) {
-      job.stop();
+      if (typeof (job as any).destroy === 'function') {
+        (job as any).destroy();
+      } else {
+        job.stop();
+      }
       console.log(`[Scheduler] Stopped job ${id}`);
     }
     this.jobs.clear();
@@ -112,7 +117,11 @@ class TaskScheduler {
   unregisterJob(taskId: string) {
     const existing = this.jobs.get(taskId);
     if (existing) {
-      existing.stop();
+      if (typeof (existing as any).destroy === 'function') {
+        (existing as any).destroy();
+      } else {
+        existing.stop();
+      }
       this.jobs.delete(taskId);
       console.log(`[Scheduler] Unregistered job ${taskId}`);
     }
@@ -123,79 +132,89 @@ class TaskScheduler {
    * update it when the agent finishes or fails.
    */
   async executeTask(taskId: string, triggeredBy: string = "manual") {
-    const task = store.getScheduledTask(taskId);
-    if (!task) {
-      console.error(`[Scheduler] Task ${taskId} not found`);
+    if (this.inFlight.has(taskId)) {
+      console.log(`[Scheduler] Task ${taskId} is already running, skipping`);
       return;
     }
+    this.inFlight.add(taskId);
 
-    const execution = store.createTaskExecution({ task_id: taskId, triggered_by: triggeredBy });
-    const startedAt = Date.now();
+    try {
+      const task = store.getScheduledTask(taskId);
+      if (!task) {
+        console.error(`[Scheduler] Task ${taskId} not found`);
+        return;
+      }
 
-    console.log(
-      `[Scheduler] Executing task ${taskId} (${task.name}), execution ${execution.id}`
-    );
+      const execution = store.createTaskExecution({ task_id: taskId, triggered_by: triggeredBy });
+      const startedAt = Date.now();
 
-    const cli = (task.agent as CliType) || 'claude';
+      console.log(
+        `[Scheduler] Executing task ${taskId} (${task.name}), execution ${execution.id}`
+      );
 
-    if (cli !== 'claude') {
-      // Use CliSession for non-Claude CLIs
-      const cliSession = new CliSession(cli, process.env.AGENT_ROOT || process.cwd());
+      const cli = (task.agent as CliType) || 'claude';
+
+      if (cli !== 'claude') {
+        // Use CliSession for non-Claude CLIs
+        const cliSession = new CliSession(cli, process.env.AGENT_ROOT || process.cwd());
+        try {
+          const output = await cliSession.execute(task.prompt);
+          const duration_ms = Date.now() - startedAt;
+          store.updateTaskExecution(execution.id, {
+            status: "success",
+            output,
+            cost_usd: null,
+            duration_ms,
+          });
+          console.log(
+            `[Scheduler] Task ${taskId} (${cli}) completed in ${duration_ms}ms`
+          );
+        } catch (err) {
+          const duration_ms = Date.now() - startedAt;
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          store.updateTaskExecution(execution.id, {
+            status: "error",
+            error: errorMsg,
+            duration_ms,
+          });
+          console.error(`[Scheduler] Task ${taskId} (${cli}) failed: ${errorMsg}`);
+        }
+        return;
+      }
+
+      // Each execution gets its own ephemeral AgentSession.
+      // We do not persist this session in the sessions table — it's scheduler-internal.
+      const session = new AgentSession(`sched-${execution.id}`);
+      session.sendMessage(task.prompt);
+
       try {
-        const output = await cliSession.execute(task.prompt);
+        const { output, cost_usd } = await collectSessionOutput(session);
         const duration_ms = Date.now() - startedAt;
+
         store.updateTaskExecution(execution.id, {
           status: "success",
           output,
-          cost_usd: null,
+          cost_usd,
           duration_ms,
         });
+
         console.log(
-          `[Scheduler] Task ${taskId} (${cli}) completed in ${duration_ms}ms`
+          `[Scheduler] Task ${taskId} completed in ${duration_ms}ms, cost=$${cost_usd ?? 0}`
         );
       } catch (err) {
         const duration_ms = Date.now() - startedAt;
         const errorMsg = err instanceof Error ? err.message : String(err);
+
         store.updateTaskExecution(execution.id, {
           status: "error",
           error: errorMsg,
           duration_ms,
         });
-        console.error(`[Scheduler] Task ${taskId} (${cli}) failed: ${errorMsg}`);
+
+        console.error(`[Scheduler] Task ${taskId} failed: ${errorMsg}`);
       }
-      return;
-    }
-
-    // Each execution gets its own ephemeral AgentSession.
-    // We do not persist this session in the sessions table — it's scheduler-internal.
-    const session = new AgentSession(`sched-${execution.id}`);
-    session.sendMessage(task.prompt);
-
-    try {
-      const { output, cost_usd } = await collectSessionOutput(session);
-      const duration_ms = Date.now() - startedAt;
-
-      store.updateTaskExecution(execution.id, {
-        status: "success",
-        output,
-        cost_usd,
-        duration_ms,
-      });
-
-      console.log(
-        `[Scheduler] Task ${taskId} completed in ${duration_ms}ms, cost=$${cost_usd ?? 0}`
-      );
-    } catch (err) {
-      const duration_ms = Date.now() - startedAt;
-      const errorMsg = err instanceof Error ? err.message : String(err);
-
-      store.updateTaskExecution(execution.id, {
-        status: "error",
-        error: errorMsg,
-        duration_ms,
-      });
-
-      console.error(`[Scheduler] Task ${taskId} failed: ${errorMsg}`);
+    } finally {
+      this.inFlight.delete(taskId);
     }
   }
 }

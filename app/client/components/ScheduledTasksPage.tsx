@@ -33,7 +33,7 @@ function StatusBadge({ status }: { status: TaskExecution['status'] }) {
   const cls =
     status === 'running'
       ? 'badge-yellow'
-      : status === 'completed'
+      : status === 'success'
       ? 'badge-green'
       : 'text-xs font-medium px-1.5 py-0.5 rounded-full bg-red-900/40 text-red-400';
   return <span className={cls}>{status}</span>;

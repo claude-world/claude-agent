@@ -1,4 +1,5 @@
-import { query } from "@anthropic-ai/claude-code";
+import { spawn, execSync, ChildProcess } from "child_process";
+import { createInterface } from "readline";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -10,197 +11,263 @@ const __dirname = path.dirname(__filename);
 // claude-agent root: two levels up from app/server/
 const AGENT_ROOT = path.resolve(__dirname, "../..");
 
-type UserMessage = {
-  type: "user";
-  message: { role: "user"; content: string };
+// Shared language rules (used by both sendMessage prefix and spawnClaude system prompt)
+const LANG_RULES_FULL: Record<string, string> = {
+  en: "You MUST respond in English only. This is a hard requirement.",
+  "zh-TW": "你必須使用繁體中文（Traditional Chinese）回覆。禁止使用簡體中文。這是最高優先級的規則。",
+  ja: "必ず日本語で回答してください。これは最優先のルールです。",
+};
+const LANG_RULES_SHORT: Record<string, string> = {
+  en: "IMPORTANT: Respond in English only.",
+  "zh-TW": "重要：必須使用繁體中文回覆，禁止使用簡體中文。",
+  ja: "重要：日本語のみで回答してください。",
 };
 
-class QueueClosedError extends Error {
-  constructor() {
-    super("Queue closed");
-    this.name = "QueueClosedError";
-  }
-}
-
 /**
- * Async iterable message queue.
- * Lets the SDK iterate over user messages as they arrive via WebSocket/channels.
+ * Resolve the path to the `claude` executable.
+ * Searches: login shell PATH, common global install locations.
  */
-class MessageQueue {
-  private messages: UserMessage[] = [];
-  private waiting: {
-    resolve: (msg: UserMessage) => void;
-    reject: (err: Error) => void;
-  } | null = null;
-  private closed = false;
-
-  push(content: string) {
-    if (this.closed) return;
-
-    const msg: UserMessage = {
-      type: "user",
-      message: { role: "user", content },
-    };
-
-    if (this.waiting) {
-      this.waiting.resolve(msg);
-      this.waiting = null;
-    } else {
-      this.messages.push(msg);
-    }
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterableIterator<UserMessage> {
-    while (!this.closed) {
-      if (this.messages.length > 0) {
-        yield this.messages.shift()!;
-      } else {
-        try {
-          yield await new Promise<UserMessage>((resolve, reject) => {
-            this.waiting = { resolve, reject };
-          });
-        } catch (err) {
-          if (err instanceof QueueClosedError) break;
-          throw err;
-        }
-      }
-    }
-  }
-
-  close() {
-    this.closed = true;
-    if (this.waiting) {
-      this.waiting.reject(new QueueClosedError());
-      this.waiting = null;
-    }
-  }
-}
-
-/**
- * Load MCP server configs from the claude-agent root .mcp.json.
- * Returns an empty object if the file is missing or invalid.
- */
-function loadMcpServers(): Record<string, any> {
-  const mcpPath = path.join(AGENT_ROOT, ".mcp.json");
+function resolveClaudePath(): string {
   try {
-    const raw = fs.readFileSync(mcpPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    return parsed.mcpServers ?? {};
+    return execSync("/bin/zsh -lc 'which claude'", {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
   } catch {
-    return {};
+    // Fallback: common install locations
+    const candidates = [
+      path.join(process.env.HOME || "", ".npm-global/bin/claude"),
+      "/usr/local/bin/claude",
+      "/opt/homebrew/bin/claude",
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return "claude"; // hope it's in PATH
+  }
+}
+
+const CLAUDE_PATH = resolveClaudePath();
+
+// Environment variable names that must never be overridden by user secrets
+const RESERVED_ENV = new Set([
+  "HOME", "PATH", "NODE_OPTIONS", "ZDOTDIR", "SHELL", "USER", "LANG", "TERM",
+]);
+
+/**
+ * Kill a process and its entire process group.
+ * Using a negative PID sends the signal to the whole group,
+ * ensuring child processes spawned by the shell wrapper are also terminated.
+ */
+function killProcessGroup(proc: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
+  try {
+    if (proc.pid) process.kill(-proc.pid, signal);
+  } catch {
+    try { proc.kill(signal); } catch {}
   }
 }
 
 /**
- * AgentSession wraps the Claude Code SDK `query` function for a single session.
- * One AgentSession per active conversation — they are long-lived and survive
- * multiple message exchanges via the internal MessageQueue.
+ * AgentSession wraps the Claude CLI for a single conversation.
+ *
+ * Architecture:
+ * - Each user message spawns a `claude -p ... --output-format stream-json` subprocess
+ * - Subsequent messages use `--resume <sessionId>` to maintain conversation context
+ * - Output is parsed line-by-line as JSON and yielded to consumers
+ * - The same interface as the previous SDK-based approach is maintained
  */
 export class AgentSession {
-  private queue = new MessageQueue();
-  private outputIterator: AsyncIterator<any> | null = null;
-  private abortController = new AbortController();
+  private proc: ChildProcess | null = null;
+  private claudeSessionId: string | null = null;
+  private pendingMessage: string | null = null;
+  private generation = 0; // incremented each time a new process is spawned
   public readonly sessionId: string;
   public readonly cwd: string;
 
   constructor(sessionId: string, cwd?: string) {
     this.sessionId = sessionId;
     this.cwd = cwd || AGENT_ROOT;
+  }
 
-    const mcpServers = loadMcpServers();
-
-    // Inject secrets as environment variables so skills can use them
-    const secretsRaw = store.listSecretsRaw();
-    const secretEnv: Record<string, string> = {};
-    for (const s of secretsRaw) {
-      secretEnv[s.name] = s.value;
-    }
-
-    // Build system prompt with strict language rules
-    const langSetting = store.getSetting("language") || "en";
-    const langRules: Record<string, string> = {
-      "en": "You MUST respond in English only. This is a hard requirement.",
-      "zh-TW": "你必須使用繁體中文（Traditional Chinese）回覆。禁止使用簡體中文。這是最高優先級的規則。",
-      "ja": "必ず日本語で回答してください。これは最優先のルールです。",
-    };
+  /**
+   * Queue a user message. The message will be processed when getOutputStream() is iterated.
+   * Prepends current time + language preference as system context.
+   */
+  sendMessage(content: string) {
+    const lang = store.getSetting("language") || "en";
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const systemPrompt = [
-      `# Language Rule (HIGHEST PRIORITY)`,
-      langRules[langSetting] || langRules["en"],
-      ``,
-      `# Current Time`,
-      `${now.toLocaleString("en-US", { timeZone: tz, hour12: false })} (${tz})`,
-    ].join("\n");
+    const timeStr = now.toLocaleString("en-US", {
+      timeZone: tz,
+      hour12: false,
+    });
 
-    const options: Record<string, any> = {
-      maxTurns: 200,
-      model: store.getSetting("model_default") || "sonnet",
+    const prefix = `<system-context>
+Time: ${timeStr} (${tz})
+Language: ${lang}
+${LANG_RULES_SHORT[lang] || LANG_RULES_SHORT["en"]}
+</system-context>
+
+`;
+    this.pendingMessage = prefix + content;
+
+    // Start the CLI process for this message (increment generation to invalidate old streams)
+    this.generation++;
+    this.spawnClaude(this.pendingMessage);
+  }
+
+  /**
+   * Spawn a claude CLI subprocess with streaming JSON output.
+   */
+  private spawnClaude(prompt: string) {
+    // Kill any existing process
+    if (this.proc) {
+      killProcessGroup(this.proc);
+      this.proc = null;
+    }
+
+    // Build full system prompt from CLAUDE.md + language/time rules
+    // Using --system-prompt (replaces default) instead of --append-system-prompt
+    // so the assistant identifies as a personal assistant, NOT a coding assistant
+    const langSetting = store.getSetting("language") || "en";
+    const now = new Date();
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const parts: string[] = [];
+
+    // Load CLAUDE.md as the primary identity
+    const claudeMdPath = path.join(this.cwd, "CLAUDE.md");
+    if (fs.existsSync(claudeMdPath)) {
+      parts.push(fs.readFileSync(claudeMdPath, "utf8"));
+    }
+
+    // Append language + time rules
+    parts.push(`\n# Language Rule (HIGHEST PRIORITY)`);
+    parts.push(LANG_RULES_FULL[langSetting] || LANG_RULES_FULL["en"]);
+    parts.push(`\n# Current Time`);
+    parts.push(`${now.toLocaleString("en-US", { timeZone: tz, hour12: false })} (${tz})`);
+
+    const systemPrompt = parts.join("\n");
+    const model = store.getSetting("model_default") || "sonnet";
+
+    // Build CLI args
+    const args: string[] = [
+      "-p",
+      prompt,
+      "--output-format",
+      "stream-json",
+      "--verbose", // required by CLI when using stream-json with --print
+      "--model",
+      model,
+      "--system-prompt",
       systemPrompt,
       // SECURITY: bypassPermissions is safe here because:
       // 1. Server binds to 127.0.0.1 only (not exposed to network)
       // 2. Single-user local application
       // 3. All API inputs are validated before reaching the agent
       // DO NOT expose this server to the internet.
-      permissionMode: "bypassPermissions",
-      abortController: this.abortController,
+      "--dangerously-skip-permissions",
+      "--allow-dangerously-skip-permissions",
+    ];
+
+    // Resume previous session for conversation continuity
+    if (this.claudeSessionId) {
+      args.push("--resume", this.claudeSessionId);
+    }
+
+    // Inject secrets as environment variables (skip reserved names to avoid breaking the subprocess)
+    const secretsRaw = store.listSecretsRaw();
+    const secretEnv: Record<string, string> = {};
+    for (const s of secretsRaw) {
+      if (!RESERVED_ENV.has(s.name) && !s.name.includes("\0")) {
+        secretEnv[s.name] = s.value;
+      }
+    }
+
+    // Use login shell to get full PATH (critical for Electron/Finder launches)
+    const shellCmd = [CLAUDE_PATH, ...args]
+      .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
+      .join(" ");
+
+    this.proc = spawn("/bin/zsh", ["-lc", shellCmd], {
       cwd: this.cwd,
-      mcpServers,
       env: { ...process.env, ...secretEnv },
-    };
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+    });
 
-    this.outputIterator = query({
-      prompt: this.queue as any,
-      options,
-    })[Symbol.asyncIterator]();
+    // Log stderr for debugging (but don't expose to user)
+    this.proc.stderr?.on("data", (data) => {
+      const msg = data.toString().trim();
+      if (msg) {
+        console.error(`[AgentSession ${this.sessionId}] stderr: ${msg.slice(0, 200)}`);
+      }
+    });
   }
 
   /**
-   * Push a user message into the queue so the SDK can process it.
-   * Prepends current time + language preference as system context.
-   */
-  sendMessage(content: string) {
-    const lang = store.getSetting("language") || "en";
-    const langRules: Record<string, string> = {
-      "en": "IMPORTANT: Respond in English only.",
-      "zh-TW": "重要：必須使用繁體中文回覆，禁止使用簡體中文。",
-      "ja": "重要：日本語のみで回答してください。",
-    };
-    const now = new Date();
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const timeStr = now.toLocaleString("en-US", { timeZone: tz, hour12: false });
-
-    const prefix = `<system-context>
-Time: ${timeStr} (${tz})
-Language: ${lang}
-${langRules[lang] || langRules["en"]}
-</system-context>
-
-`;
-    this.queue.push(prefix + content);
-  }
-
-  /**
-   * Async generator that yields raw SDK output messages.
-   * Consumers should iterate this and handle each message type.
+   * Async generator that yields SDK-compatible output messages.
+   * Parses the streaming JSON output from the Claude CLI.
+   * Each line of stdout is a JSON object matching the SDK message format.
    */
   async *getOutputStream(): AsyncGenerator<any> {
-    if (!this.outputIterator) {
-      throw new Error("Session not initialized");
+    if (!this.proc?.stdout) {
+      throw new Error("Session not initialized — call sendMessage first");
     }
-    while (true) {
-      const { value, done } = await this.outputIterator.next();
-      if (done) break;
-      yield value;
+
+    // Capture current generation so we can detect if the process was replaced
+    const myGeneration = this.generation;
+    const rl = createInterface({ input: this.proc.stdout });
+
+    try {
+      for await (const line of rl) {
+        // If a new process was spawned (sendMessage called again), stop reading old output
+        if (this.generation !== myGeneration) break;
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+
+          // Capture the session_id from init message for --resume
+          if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
+            this.claudeSessionId = msg.session_id;
+          }
+
+          yield msg;
+        } catch {
+          // Skip non-JSON lines (progress indicators, etc.)
+        }
+      }
+    } finally {
+      rl.close();
+    }
+
+    // Wait for process to exit (only if still the current generation)
+    if (this.generation === myGeneration && this.proc) {
+      const closingProc = this.proc;
+      // If process already exited, skip waiting (prevents hung promise from missed event)
+      if (closingProc.exitCode !== null) {
+        if (this.proc === closingProc) this.proc = null;
+      } else {
+        await new Promise<void>((resolve) => {
+          closingProc.on("close", () => {
+            if (this.proc === closingProc) this.proc = null;
+            resolve();
+          });
+        });
+      }
     }
   }
 
   /**
-   * Abort the current SDK execution. The session becomes unusable after this.
+   * Abort the current CLI execution.
    */
   interrupt() {
-    this.abortController.abort();
-    this.queue.close();
+    if (this.proc) {
+      const proc = this.proc;
+      this.proc = null;
+      killProcessGroup(proc, "SIGTERM");
+      setTimeout(() => { killProcessGroup(proc, "SIGKILL"); }, 3000);
+    }
   }
 }
 
@@ -208,15 +275,22 @@ ${langRules[lang] || langRules["en"]}
 // Multi-CLI support
 // -------------------------------------------------------------------
 
-export type CliType = 'claude' | 'codex' | 'gemini' | 'opencode';
+export type CliType = "claude" | "codex" | "gemini" | "opencode";
 
 // -------------------------------------------------------------------
 // Config Bot
 // -------------------------------------------------------------------
 
-export const CONFIG_BOT_PROMPT = `You are the Config Bot for Claude Agent system. Your job is to help users configure the system through natural language.
+export const CONFIG_BOT_PROMPT = `You are the Config Bot for Claude Agent system. Your ONLY job is to help users configure EXISTING settings through the local REST API.
 
-You have access to Bash tool and can call the local API at http://127.0.0.1:3456 to manage everything.
+IMPORTANT RULES:
+- ONLY read and modify settings via the API endpoints listed below
+- NEVER create new files, write code, or build anything
+- NEVER suggest editing source code or config files directly
+- Just call the API with curl and show the results
+- Be concise — show what changed, nothing else
+
+You have access to Bash tool. Use curl to call the local API at http://127.0.0.1:3456.
 
 ## Available APIs (use curl to call them):
 
@@ -276,13 +350,13 @@ You have access to Bash tool and can call the local API at http://127.0.0.1:3456
 - POST http://127.0.0.1:3456/api/migrate/run — run migration
 
 ## Rules
+- ONLY use curl to call the APIs above — never edit files directly
 - Always confirm before destructive operations (delete)
 - Show results after each operation
-- Use the user's language preference (check settings first)
+- Use the user's language preference (check GET /api/settings first)
 - Be concise — show what changed, not verbose explanations
+- If the user asks for something outside of configuration, tell them to use the main chat instead
 `;
-
-import { spawn, ChildProcess } from "child_process";
 
 /**
  * CliSession: execute prompts via non-Claude CLI tools.
@@ -314,20 +388,28 @@ export class CliSession {
     // Inject language + time
     const lang = store.getSetting("language") || "en";
     const langRules: Record<string, string> = {
-      "en": "Respond in English.",
+      en: "Respond in English.",
       "zh-TW": "必須使用繁體中文回覆，禁止使用簡體中文。",
-      "ja": "日本語で回答してください。",
+      ja: "日本語で回答してください。",
     };
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    parts.push(`Current time: ${now.toLocaleString("en-US", { timeZone: tz, hour12: false })} (${tz})`);
+    parts.push(
+      `Current time: ${now.toLocaleString("en-US", { timeZone: tz, hour12: false })} (${tz})`
+    );
     parts.push(langRules[lang] || langRules["en"]);
 
     // Detect skill invocation (e.g. /weather, /spotify)
     const skillMatch = prompt.match(/^\/(\S+)/);
     if (skillMatch) {
       const skillName = skillMatch[1];
-      const skillFile = path.join(this.cwd, ".claude", "skills", skillName, "SKILL.md");
+      const skillFile = path.join(
+        this.cwd,
+        ".claude",
+        "skills",
+        skillName,
+        "SKILL.md"
+      );
       if (fs.existsSync(skillFile)) {
         const skillContent = fs.readFileSync(skillFile, "utf8").slice(0, 3000);
         parts.push(`\n[Skill: ${skillName}]\n${skillContent}\n`);
@@ -337,7 +419,9 @@ export class CliSession {
     // Inject secrets as env var hints
     const secrets = store.listSecretsRaw();
     if (secrets.length > 0) {
-      parts.push(`\nAvailable environment variables: ${secrets.map(s => s.name).join(", ")}`);
+      parts.push(
+        `\nAvailable environment variables: ${secrets.map((s) => s.name).join(", ")}`
+      );
     }
 
     // Inject MCP server info
@@ -347,7 +431,9 @@ export class CliSession {
         const mcp = JSON.parse(fs.readFileSync(mcpFile, "utf8"));
         const servers = Object.keys(mcp.mcpServers || {});
         if (servers.length > 0) {
-          parts.push(`\nMCP servers configured: ${servers.join(", ")} (use via CLI tools if supported)`);
+          parts.push(
+            `\nMCP servers configured: ${servers.join(", ")} (use via CLI tools if supported)`
+          );
         }
       } catch {}
     }
@@ -363,56 +449,80 @@ export class CliSession {
   async execute(prompt: string): Promise<string> {
     // Build enriched prompt with project context
     const context = this.buildContext(prompt);
-    const enrichedPrompt = context ? `${context}\n\n---\n\nUser request: ${prompt}` : prompt;
+    const enrichedPrompt = context
+      ? `${context}\n\n---\n\nUser request: ${prompt}`
+      : prompt;
 
     return new Promise((resolve, reject) => {
       // Build command based on CLI type
       const cmdMap: Record<string, string[]> = {
-        codex: ['codex', 'exec', '--full-auto', '--skip-git-repo-check', enrichedPrompt],
-        gemini: ['gemini', enrichedPrompt],
-        opencode: ['opencode', enrichedPrompt],
+        codex: [
+          "codex",
+          "exec",
+          "--full-auto",
+          "--skip-git-repo-check",
+          enrichedPrompt,
+        ],
+        gemini: ["gemini", enrichedPrompt],
+        opencode: ["opencode", enrichedPrompt],
       };
 
       const args = cmdMap[this.cli];
       if (!args) return reject(new Error(`Unknown CLI: ${this.cli}`));
 
       // Use login shell to get full PATH
-      const shellCmd = args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+      const shellCmd = args
+        .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
+        .join(" ");
 
-      // Inject secrets as env vars for the subprocess
+      // Inject secrets as env vars for the subprocess (skip reserved names)
       const secretEnv: Record<string, string> = {};
       for (const s of store.listSecretsRaw()) {
-        secretEnv[s.name] = s.value;
+        if (!RESERVED_ENV.has(s.name) && !s.name.includes("\0")) {
+          secretEnv[s.name] = s.value;
+        }
       }
 
-      this.proc = spawn('/bin/zsh', ['-lc', shellCmd], {
+      this.proc = spawn("/bin/zsh", ["-lc", shellCmd], {
         cwd: this.cwd,
         env: { ...process.env, ...secretEnv },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
       });
 
-      let stdout = '';
-      let stderr = '';
+      let stdout = "";
+      let stderr = "";
 
-      this.proc.stdout?.on('data', (d) => { stdout += d.toString(); });
-      this.proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+      this.proc.stdout?.on("data", (d) => {
+        stdout += d.toString();
+      });
+      this.proc.stderr?.on("data", (d) => {
+        stderr += d.toString();
+      });
 
       const timeout = setTimeout(() => {
-        this.proc?.kill('SIGTERM');
+        const timedOutProc = this.proc;
+        this.proc = null;
+        if (timedOutProc) {
+          killProcessGroup(timedOutProc, "SIGTERM");
+          setTimeout(() => { killProcessGroup(timedOutProc, "SIGKILL"); }, 3000);
+        }
         reject(new Error(`${this.cli} timed out after 120s`));
       }, 120000);
 
-      this.proc.on('close', (code) => {
+      this.proc.on("close", (code) => {
         clearTimeout(timeout);
         this.proc = null;
         if (code !== 0 && !stdout) {
-          reject(new Error(stderr || `${this.cli} exited with code ${code}`));
+          reject(
+            new Error(stderr || `${this.cli} exited with code ${code}`)
+          );
         } else {
           resolve(stdout || stderr);
         }
       });
 
-      this.proc.on('error', (err) => {
+      this.proc.on("error", (err) => {
         clearTimeout(timeout);
         reject(err);
       });
@@ -421,8 +531,10 @@ export class CliSession {
 
   abort() {
     if (this.proc) {
-      this.proc.kill('SIGTERM');
-      setTimeout(() => { this.proc?.kill('SIGKILL'); }, 3000);
+      const proc = this.proc;
+      this.proc = null;
+      killProcessGroup(proc, "SIGTERM");
+      setTimeout(() => { killProcessGroup(proc, "SIGKILL"); }, 3000);
     }
   }
 }
@@ -430,8 +542,12 @@ export class CliSession {
 /**
  * Factory: create the right session type based on CLI selection.
  */
-export function createSession(sessionId: string, cwd: string, cli: CliType = 'claude'): AgentSession | CliSession {
-  if (cli === 'claude') {
+export function createSession(
+  sessionId: string,
+  cwd: string,
+  cli: CliType = "claude"
+): AgentSession | CliSession {
+  if (cli === "claude") {
     return new AgentSession(sessionId, cwd);
   }
   return new CliSession(cli, cwd);

@@ -27,6 +27,22 @@ export interface DiscussionEvent {
 export type EventCallback = (event: DiscussionEvent) => void;
 
 // -------------------------------------------------------------------
+// Timeout helper
+// -------------------------------------------------------------------
+
+const EXPERT_TIMEOUT_MS = 120_000; // 2 minutes per expert
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
+// -------------------------------------------------------------------
 // Expert generation
 // -------------------------------------------------------------------
 
@@ -197,9 +213,13 @@ async function runRoundtable(
   // Round 1: Expert A opens the discussion
   onEvent({ type: "round_start", round: 1 });
   const opener = experts[0];
-  const openContent = await executeExpert(opener,
-    `Topic: "${project.topic}"\n\nYou are ${opener.name} (${opener.role}). Open the discussion — share your key insight in 3-5 sentences and ask the other experts a specific question. Keep it conversational, not formal. Use WebSearch if you need current data or facts to support your point. Language: ${lang}`,
-    (partial) => onEvent({ type: "expert_message", expert: opener.name, cli: opener.cli, content: partial, round: 1 })
+  const openContent = await withTimeout(
+    executeExpert(opener,
+      `Topic: "${project.topic}"\n\nYou are ${opener.name} (${opener.role}). Open the discussion — share your key insight in 3-5 sentences and ask the other experts a specific question. Keep it conversational, not formal. Use WebSearch if you need current data or facts to support your point. Language: ${lang}`,
+      (partial) => onEvent({ type: "expert_message", expert: opener.name, cli: opener.cli, content: partial, round: 1 })
+    ),
+    EXPERT_TIMEOUT_MS,
+    `Expert ${opener.name}`
   );
   chatHistory.push({ speaker: opener.name, content: openContent });
   store.addDiscussionMessage({ project_id: projectId, expert_name: opener.name, cli: opener.cli, content: openContent, round: 1 });
@@ -249,8 +269,12 @@ Language: ${lang}`;
 
     let content: string;
     try {
-      content = await executeExpert(expert, prompt,
-        (partial) => onEvent({ type: "expert_message", expert: expert.name, cli: expert.cli, content: partial, round: currentRound })
+      content = await withTimeout(
+        executeExpert(expert, prompt,
+          (partial) => onEvent({ type: "expert_message", expert: expert.name, cli: expert.cli, content: partial, round: currentRound })
+        ),
+        EXPERT_TIMEOUT_MS,
+        `Expert ${expert.name}`
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -283,9 +307,13 @@ async function runDebate(
   onEvent({ type: "round_start", round: 1 });
 
   // Pro argument
-  const proContent = await executeExpert(
-    proExpert,
-    `Topic: "${project.topic}"\n\nAs ${proExpert.name}, argue IN FAVOR of this approach. Present your strongest case. Language: ${lang}`
+  const proContent = await withTimeout(
+    executeExpert(
+      proExpert,
+      `Topic: "${project.topic}"\n\nAs ${proExpert.name}, argue IN FAVOR of this approach. Present your strongest case. Language: ${lang}`
+    ),
+    EXPERT_TIMEOUT_MS,
+    `Expert ${proExpert.name}`
   );
   store.addDiscussionMessage({
     project_id: projectId,
@@ -297,9 +325,13 @@ async function runDebate(
   onEvent({ type: "expert_message", expert: proExpert.name, cli: proExpert.cli, content: proContent, round: 1 });
 
   // Con argument
-  const conContent = await executeExpert(
-    conExpert,
-    `Topic: "${project.topic}"\n\nPro argument by ${proExpert.name}:\n${proContent.slice(0, 500)}\n\nAs ${conExpert.name}, argue AGAINST or present an alternative perspective. Language: ${lang}`
+  const conContent = await withTimeout(
+    executeExpert(
+      conExpert,
+      `Topic: "${project.topic}"\n\nPro argument by ${proExpert.name}:\n${proContent.slice(0, 500)}\n\nAs ${conExpert.name}, argue AGAINST or present an alternative perspective. Language: ${lang}`
+    ),
+    EXPERT_TIMEOUT_MS,
+    `Expert ${conExpert.name}`
   );
   store.addDiscussionMessage({
     project_id: projectId,
@@ -315,9 +347,13 @@ async function runDebate(
   // Judge verdict (only if a distinct third expert exists)
   if (judge !== proExpert) {
     onEvent({ type: "round_start", round: 2 });
-    const judgeContent = await executeExpert(
-      judge,
-      `Topic: "${project.topic}"\n\nPro (${proExpert.name}): ${proContent.slice(0, 500)}\n\nCon (${conExpert.name}): ${conContent.slice(0, 500)}\n\nAs ${judge.name} (judge), evaluate both arguments and provide your verdict. Language: ${lang}`
+    const judgeContent = await withTimeout(
+      executeExpert(
+        judge,
+        `Topic: "${project.topic}"\n\nPro (${proExpert.name}): ${proContent.slice(0, 500)}\n\nCon (${conExpert.name}): ${conContent.slice(0, 500)}\n\nAs ${judge.name} (judge), evaluate both arguments and provide your verdict. Language: ${lang}`
+      ),
+      EXPERT_TIMEOUT_MS,
+      `Expert ${judge.name}`
     );
     store.addDiscussionMessage({
       project_id: projectId,
@@ -354,7 +390,11 @@ async function runRelay(
       prompt = `Topic: "${project.topic}"\n\nPrevious work:\n${previousOutput.slice(0, 1000)}\n\nAs ${expert.name} (${expert.role}), build upon and improve this work. Language: ${lang}`;
     }
 
-    const content = await executeExpert(expert, prompt);
+    const content = await withTimeout(
+      executeExpert(expert, prompt),
+      EXPERT_TIMEOUT_MS,
+      `Expert ${expert.name}`
+    );
     previousOutput = content;
     store.addDiscussionMessage({
       project_id: projectId,
@@ -380,7 +420,11 @@ export async function runDiscussion(
   if (!project) throw new Error("Project not found");
 
   const experts: Expert[] = project.experts;
-  if (experts.length === 0) throw new Error("No experts configured");
+  if (experts.length === 0) {
+    onEvent({ type: "error", content: "No experts configured" });
+    store.updateProject(projectId, { status: "error" });
+    return;
+  }
 
   const mode =
     project.discussion_mode === "auto"
@@ -406,6 +450,8 @@ export async function runDiscussion(
   } catch (err) {
     console.error(`[Discussion] Error in ${mode} mode:`, err);
     onEvent({ type: "error", content: String(err) });
+    store.updateProject(projectId, { status: "error" });
+    return;
   }
 
   console.log(`[Discussion] Completed for project ${projectId}`);
@@ -449,45 +495,56 @@ Generate a comprehensive conclusion that:
 
 Language: ${lang}`;
 
-  session.sendMessage(prompt);
   let result = "";
   try {
-    for await (const msg of session.getOutputStream()) {
-      if (msg.type === "assistant") {
-        const content = msg.message?.content;
-        let newText = "";
-        if (typeof content === "string") newText = content;
-        else if (Array.isArray(content)) {
-          for (const b of content) {
-            if (b.type === "text" && b.text) newText += b.text;
+    session.sendMessage(prompt);
+    try {
+      for await (const msg of session.getOutputStream()) {
+        if (msg.type === "assistant") {
+          const content = msg.message?.content;
+          let newText = "";
+          if (typeof content === "string") newText = content;
+          else if (Array.isArray(content)) {
+            for (const b of content) {
+              if (b.type === "text" && b.text) newText += b.text;
+            }
           }
-        }
-        if (newText) {
-          result += newText;
-          // Stream partial conclusion to client
-          onEvent({ type: "conclusion", content: result });
-        }
-      } else if (msg.type === "result") break;
+          if (newText) {
+            result += newText;
+            // Stream partial conclusion to client
+            onEvent({ type: "conclusion", content: result });
+          }
+        } else if (msg.type === "result") break;
+      }
+    } finally {
+      session.interrupt();
     }
-  } finally {
-    session.interrupt();
+
+    // Persist conclusion as a special round-99 message
+    store.addDiscussionMessage({
+      project_id: projectId,
+      expert_name: "Conclusion",
+      cli: "claude",
+      content: result,
+      round: 99,
+    });
+
+    // Write Markdown files to workspace/ before marking concluded
+    try {
+      saveProjectMarkdown(projectId);
+    } catch (err) {
+      console.error(`[Discussion] Failed to save markdown:`, err);
+    }
+    store.updateProject(projectId, { status: "concluded" });
+
+    onEvent({ type: "conclusion", content: result });
+    return result;
+  } catch (err) {
+    console.error(`[Discussion] generateConclusion failed:`, err);
+    onEvent({ type: "error", content: String(err) });
+    store.updateProject(projectId, { status: "error" });
+    return result;
   }
-
-  // Persist conclusion as a special round-99 message
-  store.addDiscussionMessage({
-    project_id: projectId,
-    expert_name: "Conclusion",
-    cli: "claude",
-    content: result,
-    round: 99,
-  });
-  store.updateProject(projectId, { status: "concluded" });
-
-  // Write Markdown files to workspace/
-  saveProjectMarkdown(projectId);
-
-  onEvent({ type: "conclusion", content: result });
-  return result;
 }
 
 // -------------------------------------------------------------------

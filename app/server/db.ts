@@ -224,7 +224,16 @@ const stmts = {
     `SELECT * FROM sessions WHERE id = ? AND status != 'deleted'`
   ),
   listSessions: db.prepare(
+    `SELECT * FROM sessions WHERE status = 'active' ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+  ),
+  listAllSessions: db.prepare(
     `SELECT * FROM sessions WHERE status = 'active' ORDER BY updated_at DESC`
+  ),
+  findSessionByTitle: db.prepare(
+    `SELECT * FROM sessions WHERE title = ? AND status != 'deleted' LIMIT 1`
+  ),
+  countSessions: db.prepare(
+    `SELECT COUNT(*) as count FROM sessions WHERE status = 'active'`
   ),
   updateSessionTitle: db.prepare(
     `UPDATE sessions SET title = ?, updated_at = datetime('now') WHERE id = ?`
@@ -242,7 +251,13 @@ const stmts = {
      VALUES (?, ?, ?, ?, ?)`
   ),
   getMessages: db.prepare(
+    `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`
+  ),
+  getAllMessages: db.prepare(
     `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC`
+  ),
+  countMessages: db.prepare(
+    `SELECT COUNT(*) as count FROM messages WHERE session_id = ?`
   ),
 
   // Settings
@@ -330,6 +345,7 @@ const stmts = {
   getDiscussionMessages: db.prepare(
     `SELECT * FROM discussion_messages WHERE project_id = ? ORDER BY round ASC, created_at ASC`
   ),
+  clearDiscussionMessages: db.prepare("DELETE FROM discussion_messages WHERE project_id = ?"),
 
   // Task executions
   insertTaskExecution: db.prepare(
@@ -349,18 +365,15 @@ const stmts = {
 };
 
 function parseChannelAccount(row: any): ChannelAccount {
-  return {
-    ...row,
-    allowed_users: JSON.parse(row.allowed_users || "[]"),
-    enabled: Boolean(row.enabled),
-  };
+  let allowed_users: string[] = [];
+  try { allowed_users = JSON.parse(row.allowed_users || "[]"); } catch { allowed_users = []; }
+  return { ...row, allowed_users, enabled: Boolean(row.enabled) };
 }
 
 function parseProject(row: any): Project {
-  return {
-    ...row,
-    experts: JSON.parse(row.experts || "[]"),
-  };
+  let experts: Expert[] = [];
+  try { experts = JSON.parse(row.experts || "[]"); } catch { experts = []; }
+  return { ...row, experts };
 }
 
 function parseScheduledTask(row: any): ScheduledTask {
@@ -386,13 +399,26 @@ export const store = {
     return stmts.getSession.get(id) as Session | undefined;
   },
 
-  listSessions(): Session[] {
-    return stmts.listSessions.all() as Session[];
+  listSessions(limit = 50, offset = 0): Session[] {
+    return stmts.listSessions.all(Math.max(0, Math.min(limit, 200)), offset) as Session[];
   },
 
   deleteSession(id: string): boolean {
     const result = stmts.deleteSession.run(id);
     return result.changes > 0;
+  },
+
+  listAllSessions(): Session[] {
+    return stmts.listAllSessions.all() as Session[];
+  },
+
+  findSessionByTitle(title: string): Session | undefined {
+    return stmts.findSessionByTitle.get(title) as Session | undefined;
+  },
+
+  countSessions(): number {
+    const row = stmts.countSessions.get() as { count: number };
+    return row.count;
   },
 
   // Messages
@@ -433,8 +459,17 @@ export const store = {
     };
   },
 
-  getMessages(sessionId: string): Message[] {
-    return stmts.getMessages.all(sessionId) as Message[];
+  getMessages(sessionId: string, limit = 500, offset = 0): Message[] {
+    return stmts.getMessages.all(sessionId, Math.max(0, Math.min(limit, 500)), offset) as Message[];
+  },
+
+  getAllMessages(sessionId: string): Message[] {
+    return stmts.getAllMessages.all(sessionId) as Message[];
+  },
+
+  countMessages(sessionId: string): number {
+    const row = stmts.countMessages.get(sessionId) as { count: number };
+    return row.count;
   },
 
   // Settings
@@ -520,7 +555,7 @@ export const store = {
       id,
       data.name,
       data.prompt,
-      data.agent ?? "default",
+      data.agent ?? "claude",
       data.schedule,
       data.timezone ?? "Asia/Taipei",
       data.enabled !== false ? 1 : 0
@@ -607,10 +642,11 @@ export const store = {
   },
 
   listTaskExecutions(taskId?: string, limit = 50): TaskExecution[] {
+    const safeLimit = Math.max(0, Math.min(limit, 500));
     if (taskId) {
-      return (stmts.listTaskExecutions.all(taskId, limit) as any[]).map(parseTaskExecution);
+      return (stmts.listTaskExecutions.all(taskId, safeLimit) as any[]).map(parseTaskExecution);
     }
-    return (stmts.listAllTaskExecutions.all(limit) as any[]).map(parseTaskExecution);
+    return (stmts.listAllTaskExecutions.all(safeLimit) as any[]).map(parseTaskExecution);
   },
 
   // Secrets
@@ -760,7 +796,7 @@ export const store = {
   },
 
   clearDiscussionMessages(project_id: string): void {
-    db.prepare("DELETE FROM discussion_messages WHERE project_id = ?").run(project_id);
+    stmts.clearDiscussionMessages.run(project_id);
   },
 
   // Cross-session history search
@@ -785,12 +821,14 @@ export const store = {
       params.push(session_id);
     }
     if (search) {
-      sql += ` AND (m.content LIKE ? OR m.tool_name LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`);
+      // Escape LIKE wildcards in user input (backslash must come first)
+      const escaped = search.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
+      sql += ` AND (m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\')`;
+      params.push(`%${escaped}%`, `%${escaped}%`);
     }
 
     sql += ` ORDER BY m.created_at DESC, m.id DESC LIMIT ? OFFSET ?`;
-    params.push(Math.min(limit, 500), offset);
+    params.push(Math.max(0, Math.min(limit, 500)), offset);
 
     return db.prepare(sql).all(...params) as any[];
   },

@@ -146,11 +146,11 @@ export default function MemoryPage() {
               <p className="text-sm font-medium truncate">{file.filename}</p>
               <p className="text-xs text-gray-500 mt-0.5">{getFileDescription(file.filename)}</p>
               <div className="flex items-center gap-2 mt-1">
-                {file.size > 0 && (
-                  <span className="text-xs text-gray-600">{formatFileSize(file.size)}</span>
+                {(file.size ?? 0) > 0 && (
+                  <span className="text-xs text-gray-600">{formatFileSize(file.size ?? 0)}</span>
                 )}
-                {file.modified_at > 0 && (
-                  <span className="text-xs text-gray-600">{formatDate(file.modified_at)}</span>
+                {(file.modified_at ?? 0) > 0 && (
+                  <span className="text-xs text-gray-600">{formatDate(file.modified_at ?? 0)}</span>
                 )}
               </div>
             </button>

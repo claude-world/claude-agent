@@ -1,5 +1,56 @@
 # Changelog
 
+## [1.3.0] - 2026-03-28
+
+### Breaking Changes
+
+- **SDK to CLI migration**: Replaced the `@anthropic-ai/claude-code` SDK `query()` function with Claude CLI subprocess invocation. The SDK removed its programmatic API in v2.0.25+. AgentSession now spawns `claude -p --output-format stream-json` per message with `--resume` for conversation continuity. Same interface, better process isolation.
+- **Express 5**: Upgraded from Express 4 to Express 5. Async error handling is now native.
+- **React 19**: Upgraded from React 18 to React 19. No component changes required.
+- **better-sqlite3 12**: Upgraded from v11 to v12.
+- **node-cron 4**: Upgraded from v3 to v4.
+
+### Security
+
+- Removed direct dependency on `@anthropic-ai/claude-code` npm package (had 9 CVEs in v1.x). Now uses the globally installed CLI binary.
+- Upgraded `node-telegram-bot-api` 0.66 -> 0.67 (form-data vulnerability fix)
+- Upgraded `discord.js` 14.16 -> 14.25 (undici security patches)
+- Upgraded `electron` 33 -> 35, `electron-builder` 25 -> 26
+
+### Added
+
+- **Health check endpoint**: `GET /api/health` — returns uptime, memory, active sessions, bridge status
+- **Export/backup endpoint**: `GET /api/export` — full JSON backup of sessions, messages, settings, tasks
+- **Usage stats endpoint**: `GET /api/stats` — session counts, task execution metrics, costs
+- **Webhook channel**: `POST /api/webhook` — inbound webhook for external integrations (supports optional secret auth)
+- **API pagination**: Sessions and messages endpoints now support `?limit=N&offset=N` query params
+- **Rate limiting**: In-memory rate limiter (30 req/min) on WebSocket chat messages
+- **Session TTL**: Automatic cleanup of idle in-memory sessions every 10 minutes
+- **Vitest**: Added test framework with `npm test` script
+- **Fixed SDK option**: Changed incorrect `systemPrompt` to `appendSystemPrompt` (was silently ignored)
+
+### Package Upgrades
+
+| Package | From | To |
+|---------|------|----|
+| express | 4.22 | 5.2 |
+| react / react-dom | 18.3 | 19.2 |
+| better-sqlite3 | 11.10 | 12.8 |
+| electron | 33.4 | 35.7 |
+| electron-builder | 25.1 | 26.8 |
+| node-cron | 3.0 | 4.2 |
+| discord.js | 14.16 | 14.25 |
+| node-telegram-bot-api | 0.66 | 0.67 |
+| react-markdown | 9.1 | 10.1 |
+| @types/react | 18.3 | 19.2 |
+| @vitejs/plugin-react | 4.3 | 4.7 |
+
+### Fixed
+
+- `MemoryPage.tsx`: Fixed possible undefined access on `file.size` and `file.modified_at`
+- `ScheduledTasksPage.tsx`: Fixed comparison with non-existent `'completed'` status (should be `'success'`)
+- `SettingsPage.tsx`: Added missing `McpServer` type import and `setMcpServers` state declaration
+
 ## [1.1.0] - 2026-03-24
 
 ### Fixed - Orphan Process Prevention

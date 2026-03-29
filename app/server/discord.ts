@@ -48,7 +48,7 @@ export class DiscordBridge {
    * Login and start listening for messages.
    * @param token        Discord bot token
    * @param allowedUsers Optional list of allowed Discord user IDs or usernames.
-   *                     If empty, all users are allowed.
+   *                     If empty or not provided, all users are blocked until admin adds them.
    */
   start(token: string, allowedUsers?: string[]) {
     if (this.client) {
@@ -219,6 +219,7 @@ export class DiscordBridge {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[Discord] Agent error for user ${userId}:`, errorMsg);
         pendingText = `Error: ${errorMsg}`;
+        fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
         this.agentSessions.delete(sessionId);
       } finally {
         if (typingInterval) clearInterval(typingInterval);
@@ -245,6 +246,11 @@ export class DiscordBridge {
       );
     }).catch((err) => {
       console.error("[Discord] Login failed:", err.message);
+      // Clean up so bridge can be restarted
+      if (this.client) {
+        this.client.destroy();
+        this.client = null;
+      }
     });
   }
 
