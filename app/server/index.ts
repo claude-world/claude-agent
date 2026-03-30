@@ -14,6 +14,7 @@ import { generateExperts, runDiscussion, generateConclusion } from "./discussion
 import { TelegramBridge } from "./telegram.ts";
 import { DiscordBridge } from "./discord.ts";
 import scheduler from "./scheduler.ts";
+import { parseTelegramExport, importHistoryToRole } from "./import-history.ts";
 
 // --- Channel bridge instances ---
 const bridges: {
@@ -1664,6 +1665,61 @@ app.delete("/api/roles/memory/:chatId", (req, res) => {
     store.clearRoleMemories(req.params.chatId);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+
+// POST /api/roles/import-history — import Telegram HTML chat export into a role
+app.post("/api/roles/import-history", (req, res) => {
+  try {
+    const { file_path, role_id, chat_id } = req.body ?? {};
+    if (!file_path) {
+      return res.status(400).json({ error: "file_path required (path to Telegram HTML export)" });
+    }
+    if (!role_id && !chat_id) {
+      return res.status(400).json({ error: "role_id or chat_id required" });
+    }
+    // Validate file exists
+    if (!fs.existsSync(file_path)) {
+      return res.status(404).json({ error: `File not found: ${file_path}` });
+    }
+    const result = importHistoryToRole(file_path, role_id, chat_id);
+    res.json({
+      success: true,
+      chat_name: result.chatName,
+      message_count: result.messageCount,
+      summary_length: result.summary.length,
+      preview: result.summary.slice(0, 500),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/roles/parse-history — parse Telegram export without importing (preview)
+app.post("/api/roles/parse-history", (req, res) => {
+  try {
+    const { file_path } = req.body ?? {};
+    if (!file_path) {
+      return res.status(400).json({ error: "file_path required" });
+    }
+    if (!fs.existsSync(file_path)) {
+      return res.status(404).json({ error: `File not found: ${file_path}` });
+    }
+    const result = parseTelegramExport(file_path);
+    res.json({
+      chat_name: result.chatName,
+      message_count: result.messageCount,
+      participants: result.participants,
+      date_range: result.dateRange,
+      sample_messages: result.messages.slice(0, 10).map(m => ({
+        sender: m.sender,
+        date: m.date,
+        time: m.time,
+        text: m.text.slice(0, 100),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // GET /api/roles — list all roles
