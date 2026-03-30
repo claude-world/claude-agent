@@ -1,6 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT, type CliType } from "./agent.ts";
 import type { store as StoreType, Role } from "./db.ts";
+import { shouldReply } from "./reply-filter.ts";
 import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
 import fs from "fs";
@@ -51,6 +52,15 @@ export class TelegramBridge {
     }
 
     this.bot = new TelegramBot(token, { polling: true });
+
+    // Cache bot info for mention detection
+    let botUsername = "";
+    let botId = 0;
+    this.bot.getMe().then((me) => {
+      botUsername = me.username || "";
+      botId = me.id;
+      console.log(`[Telegram] Bot info: @${botUsername} (id: ${botId})`);
+    }).catch(() => {});
 
     this.bot.on("message", async (msg) => {
       const chatId = String(msg.chat.id);
@@ -227,6 +237,25 @@ export class TelegramBridge {
 
       // Look up role for this chat
       const role = this.store.getRoleByChatId(chatId) || undefined;
+
+      // Smart reply filter: decide whether to respond in groups
+      const isDM = msg.chat.type === 'private';
+      const isMention = botUsername ? text.toLowerCase().includes(`@${botUsername.toLowerCase()}`) : false;
+      const isReplyToBot = botId ? msg.reply_to_message?.from?.id === botId : false;
+      const roleName = role?.name || '';
+
+      const decision = shouldReply({
+        text, role: role || null, isMention, isReplyToBot, isDM, botName: roleName,
+      });
+
+      if (!decision.shouldReply) {
+        return; // Silent: don't respond
+      }
+
+      // Strip @mention from text before sending to agent
+      if (botUsername && isMention) {
+        text = text.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
+      }
 
       // Build per-chat memory map
       const memories = this.store.listRoleMemories(chatId);

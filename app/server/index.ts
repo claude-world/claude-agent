@@ -1731,9 +1731,9 @@ app.get("/api/roles", (_req, res) => {
 // POST /api/roles — create a new role
 app.post("/api/roles", (req, res) => {
   try {
-    const { name, personality, allowed_skills, language, reply_style, knowledge_context } = req.body ?? {};
+    const { name, personality, allowed_skills, language, reply_style, knowledge_context, reply_mode, reply_keywords } = req.body ?? {};
     if (!name) return res.status(400).json({ error: "name required" });
-    const role = store.createRole({ name, personality, allowed_skills, language, reply_style, knowledge_context });
+    const role = store.createRole({ name, personality, allowed_skills, language, reply_style, knowledge_context, reply_mode, reply_keywords });
     res.status(201).json(role);
   } catch (err) { res.status(500).json({ error: String(err) }); }
 });

@@ -155,6 +155,8 @@ db.exec(`
 // Migrations: add new columns to existing tables if they don't exist yet
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_chat_id TEXT DEFAULT NULL`); } catch {}
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_platform TEXT DEFAULT NULL`); } catch {}
+try { db.exec(`ALTER TABLE roles ADD COLUMN reply_mode TEXT DEFAULT 'always'`); } catch {}
+try { db.exec(`ALTER TABLE roles ADD COLUMN reply_keywords TEXT DEFAULT '[]'`); } catch {}
 
 // Types
 export interface Session {
@@ -258,6 +260,8 @@ export interface Role {
   language: string;
   reply_style: string;
   knowledge_context: string;
+  reply_mode: string;  // 'always' | 'mention' | 'smart' | 'keywords' | 'never'
+  reply_keywords: string[];
   created_at: string;
   updated_at: string;
 }
@@ -430,12 +434,12 @@ const stmts = {
   listRoles: db.prepare(`SELECT * FROM roles ORDER BY name ASC`),
   getRole: db.prepare(`SELECT * FROM roles WHERE id = ?`),
   insertRole: db.prepare(
-    `INSERT INTO roles (id, name, personality, allowed_skills, language, reply_style, knowledge_context)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO roles (id, name, personality, allowed_skills, language, reply_style, knowledge_context, reply_mode, reply_keywords)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   updateRole: db.prepare(
     `UPDATE roles SET name = ?, personality = ?, allowed_skills = ?, language = ?,
-     reply_style = ?, knowledge_context = ?, updated_at = datetime('now') WHERE id = ?`
+     reply_style = ?, knowledge_context = ?, reply_mode = ?, reply_keywords = ?, updated_at = datetime('now') WHERE id = ?`
   ),
   deleteRole: db.prepare(`DELETE FROM roles WHERE id = ?`),
 
@@ -486,7 +490,9 @@ function parseScheduledTask(row: any): ScheduledTask {
 function parseRole(row: any): Role {
   let allowed_skills: string[] = [];
   try { allowed_skills = JSON.parse(row.allowed_skills || "[]"); } catch { allowed_skills = []; }
-  return { ...row, allowed_skills };
+  let reply_keywords: string[] = [];
+  try { reply_keywords = JSON.parse(row.reply_keywords || "[]"); } catch { reply_keywords = []; }
+  return { ...row, allowed_skills, reply_keywords };
 }
 
 function parseTaskExecution(row: any): TaskExecution {
@@ -965,6 +971,8 @@ export const store = {
     language?: string;
     reply_style?: string;
     knowledge_context?: string;
+    reply_mode?: string;
+    reply_keywords?: string[];
   }): Role {
     const id = randomUUID();
     stmts.insertRole.run(
@@ -974,7 +982,9 @@ export const store = {
       JSON.stringify(data.allowed_skills ?? []),
       data.language ?? "en",
       data.reply_style ?? "concise",
-      data.knowledge_context ?? ""
+      data.knowledge_context ?? "",
+      data.reply_mode ?? "always",
+      JSON.stringify(data.reply_keywords ?? [])
     );
     return parseRole(stmts.getRole.get(id));
   },
@@ -988,6 +998,8 @@ export const store = {
       language: string;
       reply_style: string;
       knowledge_context: string;
+      reply_mode: string;
+      reply_keywords: string[];
     }>
   ): Role | undefined {
     const existing = stmts.getRole.get(id) as any;
@@ -1000,6 +1012,8 @@ export const store = {
       data.language ?? existing.language,
       data.reply_style ?? existing.reply_style,
       data.knowledge_context ?? existing.knowledge_context,
+      data.reply_mode ?? existing.reply_mode ?? "always",
+      JSON.stringify(data.reply_keywords ?? existingParsed.reply_keywords),
       id
     );
     return parseRole(stmts.getRole.get(id));

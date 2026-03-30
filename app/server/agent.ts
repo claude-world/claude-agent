@@ -405,7 +405,7 @@ Schedule format: cron (minute hour day month weekday). Examples: "0 8 * * *" = d
 ### 11. Roles (Per-Chat Personality)
 "Create a role" / "Assign role to this chat" / "Show roles" / "View chat memory"
 - GET http://127.0.0.1:3456/api/roles — list all roles
-- POST http://127.0.0.1:3456/api/roles — create {name, personality, allowed_skills: ["weather","spotify"], language: "en"|"zh-TW"|"ja", reply_style: "concise"|"detailed"|"casual"|"formal", knowledge_context: "markdown text"}
+- POST http://127.0.0.1:3456/api/roles — create {name, personality, allowed_skills: ["weather","spotify"], language: "en"|"zh-TW"|"ja", reply_style: "concise"|"detailed"|"casual"|"formal", knowledge_context: "markdown text", reply_mode: "always"|"mention"|"smart"|"keywords"|"never", reply_keywords: ["keyword1","keyword2"]}
 - PUT http://127.0.0.1:3456/api/roles/:id — update
 - DELETE http://127.0.0.1:3456/api/roles/:id — delete
 - POST http://127.0.0.1:3456/api/roles/:id/assign — bind to chat {chat_id, platform: "telegram"|"discord"}
@@ -415,6 +415,8 @@ Schedule format: cron (minute hour day month weekday). Examples: "0 8 * * *" = d
 - GET http://127.0.0.1:3456/api/roles/memory/:chatId — view chat memories
 - PUT http://127.0.0.1:3456/api/roles/memory/:chatId/:key — set memory {value: "..."}
 - DELETE http://127.0.0.1:3456/api/roles/memory/:chatId — clear all memories
+
+Reply modes: "always" (reply to every message), "mention" (only @bot or reply-to-bot), "smart" (AI heuristics — recommended for groups), "keywords" (match specific words), "never" (silent observer)
 
 Guide: Each Telegram group or Discord channel can have its own personality, language, and memory.
 To set up: 1) Create a role, 2) Assign it to a chat_id.

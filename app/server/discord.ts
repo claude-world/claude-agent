@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { AgentSession, CliSession, createSession, type CliType } from "./agent.ts";
 import type { store as StoreType, Role } from "./db.ts";
+import { shouldReply } from "./reply-filter.ts";
 import { AGENT_ROOT } from "./paths.ts";
 import path from "path";
 import fs from "fs";
@@ -73,9 +74,6 @@ export class DiscordBridge {
         this.client?.user &&
         message.mentions.has(this.client.user);
 
-      // Only respond to DMs or @mentions in servers
-      if (!isDM && !isMention) return;
-
       const userId = message.author.id;
       const username = message.author.username;
 
@@ -137,6 +135,16 @@ export class DiscordBridge {
 
       // Look up role for this chat
       const role = this.store.getRoleByChatId(chatKey) || undefined;
+
+      // Smart reply filter: decide whether to respond in groups
+      const isReplyToBot = false; // Discord threading is different, keep it simple for now
+      const botName = role?.name || this.client?.user?.displayName || '';
+
+      const decision = shouldReply({
+        text, role: role || null, isMention: !!isMention, isReplyToBot, isDM, botName,
+      });
+
+      if (!decision.shouldReply) return;
 
       // Build per-chat memory map
       const memories = this.store.listRoleMemories(chatKey);

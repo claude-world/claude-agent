@@ -22,6 +22,8 @@ interface RoleFormData {
   personality: string;
   language: string;
   reply_style: string;
+  reply_mode: string;
+  reply_keywords: string[];
   allowed_skills: string;
   knowledge_context: string;
 }
@@ -31,6 +33,8 @@ const emptyForm = (): RoleFormData => ({
   personality: '',
   language: 'en',
   reply_style: 'concise',
+  reply_mode: 'smart',
+  reply_keywords: [] as string[],
   allowed_skills: '',
   knowledge_context: '',
 });
@@ -98,6 +102,35 @@ function RoleForm({ initial, onSave, onCancel, submitLabel }: RoleFormProps) {
             ))}
           </select>
         </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-400 mb-1">{t('roles.replyMode')}</label>
+          <select
+            value={form.reply_mode || 'smart'}
+            onChange={e => setForm(prev => ({ ...prev, reply_mode: e.target.value }))}
+            className="input-base w-full"
+          >
+            <option value="always">{t('roles.replyAlways')}</option>
+            <option value="mention">{t('roles.replyMention')}</option>
+            <option value="smart">{t('roles.replySmart')}</option>
+            <option value="keywords">{t('roles.replyKeywords')}</option>
+            <option value="never">{t('roles.replyNever')}</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1">{t('roles.replyModeHint')}</p>
+        </div>
+
+        {form.reply_mode === 'keywords' && (
+          <div className="col-span-2">
+            <label className="block text-xs font-medium text-gray-400 mb-1">{t('roles.replyKeywordsList')}</label>
+            <input
+              type="text"
+              value={(form.reply_keywords || []).join(', ')}
+              onChange={e => setForm(prev => ({ ...prev, reply_keywords: e.target.value.split(',').map(s => s.trim()).filter(Boolean) }))}
+              className="input-base w-full"
+              placeholder="help, weather, remind, 幫忙, 天氣"
+            />
+          </div>
+        )}
 
         <div className="col-span-2">
           <label className="block text-xs font-medium text-gray-400 mb-1">{t('roles.personality')}</label>
@@ -169,6 +202,14 @@ function RoleCard({ role, onEdit, onDelete }: RoleCardProps) {
             <h4 className="text-sm font-medium text-gray-100">{role.name}</h4>
             <span className="badge-blue text-xs">{langLabel}</span>
             <span className="badge-gray text-xs capitalize">{role.reply_style}</span>
+            <span className={`text-xs px-2 py-0.5 rounded ${
+              (role as any).reply_mode === 'smart' || !(role as any).reply_mode ? 'bg-green-900 text-green-300' :
+              (role as any).reply_mode === 'always' ? 'bg-yellow-900 text-yellow-300' :
+              (role as any).reply_mode === 'never' ? 'bg-red-900 text-red-300' :
+              'bg-blue-900 text-blue-300'
+            }`}>
+              {(role as any).reply_mode || 'smart'}
+            </span>
             {role.allowed_skills.length > 0 && (
               <span className="text-xs text-gray-500">
                 {role.allowed_skills.length} skill{role.allowed_skills.length !== 1 ? 's' : ''}
@@ -425,6 +466,8 @@ export default function RolesPage() {
     personality: role.personality,
     language: role.language,
     reply_style: role.reply_style,
+    reply_mode: (role as any).reply_mode || 'smart',
+    reply_keywords: (role as any).reply_keywords || [],
     allowed_skills: role.allowed_skills.join(', '),
     knowledge_context: role.knowledge_context,
   });
