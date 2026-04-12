@@ -1,5 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import useWebSocket from 'react-use-websocket';
+import _rwsProjects from 'react-use-websocket';
+const useWebSocket = (() => {
+  if (typeof _rwsProjects === 'function') return _rwsProjects;
+  const a = _rwsProjects as any;
+  if (typeof a?.default === 'function') return a.default;
+  if (typeof a?.useWebSocket === 'function') return a.useWebSocket;
+  return _rwsProjects;
+})() as typeof _rwsProjects;
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Project, Expert, DiscussionMessage } from '../types';
@@ -896,10 +903,13 @@ export default function ProjectsPage() {
             {projects.map((project) => {
               const isActive = selected?.id === project.id;
               return (
-                <button
+                <div
                   key={project.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelectProject(project)}
-                  className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                  onKeyDown={e => e.key === 'Enter' && handleSelectProject(project)}
+                  className={`w-full text-left p-3 rounded-lg border transition-colors cursor-pointer ${
                     isActive
                       ? 'bg-gray-700 border-blue-600'
                       : 'bg-gray-800 border-gray-700 hover:bg-gray-750 hover:border-gray-600'
@@ -926,7 +936,7 @@ export default function ProjectsPage() {
                       ✕
                     </button>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>

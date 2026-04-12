@@ -25,9 +25,9 @@ try {
   console.log("\n[1/3] Building client assets...");
   execSync("npx vite build", { cwd, stdio: "inherit" });
 
-  // Step 2: Rebuild native modules for Electron
-  console.log("\n[2/3] Rebuilding native modules for Electron...");
-  execSync("npx electron-rebuild", { cwd, stdio: "inherit" });
+  // Step 2: Rebuild native modules for system Node (server runs as a separate process)
+  console.log("\n[2/3] Rebuilding native modules for system Node...");
+  execSync("npm rebuild better-sqlite3", { cwd, stdio: "inherit" });
 
   // Step 3: Package with electron-builder
   console.log("\n[3/3] Packaging with electron-builder...");

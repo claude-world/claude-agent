@@ -20,6 +20,7 @@ const db = new Database(DB_PATH);
 
 // WAL mode: better concurrent read performance
 db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
@@ -137,6 +138,79 @@ db.exec(`
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(chat_id, key)
   );
+
+  CREATE TABLE IF NOT EXISTS agent_executions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'idle',
+    state_data TEXT NOT NULL DEFAULT '{}',
+    supervisor_plan TEXT,
+    result TEXT,
+    error TEXT,
+    cost_usd REAL,
+    duration_ms INTEGER,
+    lineage_id TEXT,
+    triggered_by TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_execution_steps (
+    id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL REFERENCES agent_executions(id) ON DELETE CASCADE,
+    step_index INTEGER NOT NULL DEFAULT 0,
+    specialist_type TEXT NOT NULL,
+    input TEXT NOT NULL DEFAULT '',
+    output TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    cost_usd REAL,
+    duration_ms INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_lineages (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT REFERENCES agent_lineages(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    memory_scope TEXT NOT NULL DEFAULT 'summary',
+    inherited_memory TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_entries (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    priority INTEGER NOT NULL DEFAULT 2,
+    status TEXT NOT NULL DEFAULT 'active',
+    milestones TEXT NOT NULL DEFAULT '[]',
+    tags TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_loop_state (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'idle',
+    current_plan TEXT NOT NULL DEFAULT '{}',
+    last_run_at TEXT,
+    next_run_at TEXT,
+    reflection_notes TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_progress_log (
+    id TEXT PRIMARY KEY,
+    goal_id TEXT REFERENCES goal_entries(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    execution_id TEXT REFERENCES agent_executions(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // Indices for performance
@@ -150,6 +224,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_disc_msg_project ON discussion_messages(project_id);
   CREATE INDEX IF NOT EXISTS idx_role_assignments_role ON role_assignments(role_id);
   CREATE INDEX IF NOT EXISTS idx_role_memories_chat ON role_memories(chat_id);
+  CREATE INDEX IF NOT EXISTS idx_exec_steps_exec ON agent_execution_steps(execution_id);
+  CREATE INDEX IF NOT EXISTS idx_lineages_parent ON agent_lineages(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_goals_status ON goal_entries(status);
+  CREATE INDEX IF NOT EXISTS idx_goal_progress_goal ON goal_progress_log(goal_id);
 `);
 
 // Migrations: add new columns to existing tables if they don't exist yet
@@ -157,6 +235,20 @@ try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_chat_id TEXT DEFA
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN delivery_platform TEXT DEFAULT NULL`); } catch {}
 try { db.exec(`ALTER TABLE roles ADD COLUMN reply_mode TEXT DEFAULT 'always'`); } catch {}
 try { db.exec(`ALTER TABLE roles ADD COLUMN reply_keywords TEXT DEFAULT '[]'`); } catch {}
+
+// Phase 2: Hybrid Memory
+try { db.exec(`ALTER TABLE role_memories ADD COLUMN memory_type TEXT DEFAULT 'general'`); } catch {}
+try { db.exec(`ALTER TABLE role_memories ADD COLUMN source TEXT DEFAULT 'explicit'`); } catch {}
+
+// Phase 3: Agentic System
+try { db.exec(`ALTER TABLE projects ADD COLUMN supervisor_model TEXT DEFAULT 'claude-cli'`); } catch {}
+try { db.exec(`ALTER TABLE projects ADD COLUMN parallel_execution INTEGER DEFAULT 1`); } catch {}
+try { db.exec(`ALTER TABLE discussion_messages ADD COLUMN parallel_group INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE sessions ADD COLUMN lineage_id TEXT`); } catch {}
+
+// Indices that depend on migrated columns (run after ALTER TABLE)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_role_memories_type ON role_memories(memory_type)`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_lineage ON sessions(lineage_id)`); } catch {}
 
 // Types
 export interface Session {
@@ -278,7 +370,72 @@ export interface RoleMemory {
   chat_id: string;
   key: string;
   value: string;
+  memory_type: string;
+  source: string;
   updated_at: string;
+}
+
+export interface AgentExecution {
+  id: string;
+  title: string;
+  goal: string;
+  mode: "auto" | "parallel" | "sequential" | "swarm";
+  status: "idle" | "planning" | "dispatching" | "running" | "aggregating" | "reflecting" | "done" | "error" | "cancelled";
+  state_data: string; // JSON
+  supervisor_plan: string | null;
+  result: string | null;
+  error: string | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  lineage_id: string | null;
+  triggered_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentExecutionStep {
+  id: string;
+  execution_id: string;
+  step_index: number;
+  specialist_type: string;
+  input: string;
+  output: string | null;
+  status: "pending" | "running" | "done" | "error";
+  cost_usd: number | null;
+  duration_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface AgentLineage {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  version: number;
+  memory_scope: "full" | "summary" | "none";
+  inherited_memory: string; // JSON Record<string,string>
+  created_at: string;
+}
+
+export interface GoalEntry {
+  id: string;
+  title: string;
+  description: string;
+  priority: 1 | 2 | 3;
+  status: "active" | "paused" | "completed";
+  milestones: Array<{ title: string; done: boolean }>;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalProgressLog {
+  id: string;
+  goal_id: string | null;
+  event_type: string;
+  summary: string;
+  execution_id: string | null;
+  created_at: string;
 }
 
 // Prepared statements
@@ -458,12 +615,105 @@ const stmts = {
 
   // Role memories
   setRoleMemory: db.prepare(
-    `INSERT OR REPLACE INTO role_memories (id, chat_id, key, value, updated_at) VALUES (?, ?, ?, ?, datetime('now'))`
+    `INSERT INTO role_memories (id, chat_id, key, value, memory_type, source, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(chat_id, key) DO UPDATE SET
+       value = excluded.value,
+       memory_type = excluded.memory_type,
+       source = excluded.source,
+       updated_at = excluded.updated_at`
   ),
   getRoleMemory: db.prepare(`SELECT * FROM role_memories WHERE chat_id = ? AND key = ?`),
   listRoleMemories: db.prepare(`SELECT * FROM role_memories WHERE chat_id = ? ORDER BY key ASC`),
+  listAllRoleMemories: db.prepare(`SELECT * FROM role_memories ORDER BY chat_id ASC, key ASC`),
   deleteRoleMemory: db.prepare(`DELETE FROM role_memories WHERE chat_id = ? AND key = ?`),
   clearRoleMemories: db.prepare(`DELETE FROM role_memories WHERE chat_id = ?`),
+
+  // Agent executions
+  insertAgentExecution: db.prepare(
+    `INSERT INTO agent_executions (id, title, goal, mode, triggered_by)
+     VALUES (?, ?, ?, ?, ?)`
+  ),
+  updateAgentExecution: db.prepare(
+    `UPDATE agent_executions SET status = COALESCE(?, status), state_data = COALESCE(?, state_data),
+     supervisor_plan = COALESCE(?, supervisor_plan), result = COALESCE(?, result),
+     error = COALESCE(?, error), cost_usd = COALESCE(?, cost_usd),
+     duration_ms = COALESCE(?, duration_ms), lineage_id = COALESCE(?, lineage_id),
+     updated_at = datetime('now') WHERE id = ?`
+  ),
+  getAgentExecution: db.prepare(`SELECT * FROM agent_executions WHERE id = ?`),
+  listAgentExecutions: db.prepare(
+    `SELECT * FROM agent_executions ORDER BY created_at DESC LIMIT ?`
+  ),
+  listPendingAgentExecutions: db.prepare(
+    `SELECT * FROM agent_executions WHERE status NOT IN ('done', 'error', 'cancelled', 'idle') ORDER BY created_at ASC`
+  ),
+  deleteAgentExecution: db.prepare(`DELETE FROM agent_executions WHERE id = ?`),
+
+  // Execution steps
+  insertExecutionStep: db.prepare(
+    `INSERT INTO agent_execution_steps (id, execution_id, step_index, specialist_type, input, status)
+     VALUES (?, ?, ?, ?, ?, 'pending')`
+  ),
+  updateExecutionStep: db.prepare(
+    `UPDATE agent_execution_steps SET status = ?, output = COALESCE(?, output),
+     cost_usd = COALESCE(?, cost_usd), duration_ms = COALESCE(?, duration_ms),
+     completed_at = CASE WHEN ? = 'done' OR ? = 'error' THEN datetime('now') ELSE completed_at END
+     WHERE id = ?`
+  ),
+  getExecutionSteps: db.prepare(
+    `SELECT * FROM agent_execution_steps WHERE execution_id = ? ORDER BY step_index ASC`
+  ),
+  deleteExecutionSteps: db.prepare(
+    `DELETE FROM agent_execution_steps WHERE execution_id = ?`
+  ),
+
+  // Agent lineages
+  insertLineage: db.prepare(
+    `INSERT INTO agent_lineages (id, parent_id, name, version, memory_scope, inherited_memory)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  getLineage: db.prepare(`SELECT * FROM agent_lineages WHERE id = ?`),
+  listLineageChildren: db.prepare(
+    `SELECT * FROM agent_lineages WHERE parent_id = ? ORDER BY version ASC`
+  ),
+  listRootLineages: db.prepare(
+    `SELECT * FROM agent_lineages WHERE parent_id IS NULL ORDER BY created_at DESC`
+  ),
+  // Goal entries
+  insertGoal: db.prepare(
+    `INSERT INTO goal_entries (id, title, description, priority, milestones, tags)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  updateGoal: db.prepare(
+    `UPDATE goal_entries SET title = COALESCE(?, title), description = COALESCE(?, description),
+     priority = COALESCE(?, priority), status = COALESCE(?, status),
+     milestones = COALESCE(?, milestones), tags = COALESCE(?, tags),
+     updated_at = datetime('now') WHERE id = ?`
+  ),
+  getGoal: db.prepare(`SELECT * FROM goal_entries WHERE id = ?`),
+  listGoals: db.prepare(`SELECT * FROM goal_entries WHERE status != 'completed' ORDER BY priority DESC, created_at DESC`),
+  listAllGoals: db.prepare(`SELECT * FROM goal_entries ORDER BY created_at DESC`),
+  deleteGoal: db.prepare(`DELETE FROM goal_entries WHERE id = ?`),
+
+  // Goal loop state (single-row table)
+  getGoalLoopState: db.prepare(`SELECT * FROM goal_loop_state WHERE id = 1`),
+  upsertGoalLoopState: db.prepare(
+    `INSERT OR REPLACE INTO goal_loop_state (id, status, current_plan, last_run_at, next_run_at, reflection_notes, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?, datetime('now'))`
+  ),
+
+  // Goal progress log
+  insertGoalProgressLog: db.prepare(
+    `INSERT INTO goal_progress_log (id, goal_id, event_type, summary, execution_id)
+     VALUES (?, ?, ?, ?, ?)`
+  ),
+  listGoalProgressLogs: db.prepare(
+    `SELECT * FROM goal_progress_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT ?`
+  ),
+  listAllProgressLogs: db.prepare(
+    `SELECT * FROM goal_progress_log ORDER BY created_at DESC LIMIT ?`
+  ),
 };
 
 function parseChannelAccount(row: any): ChannelAccount {
@@ -497,6 +747,14 @@ function parseRole(row: any): Role {
 
 function parseTaskExecution(row: any): TaskExecution {
   return { ...row };
+}
+
+function parseGoalEntry(row: any): GoalEntry {
+  let milestones: Array<{ title: string; done: boolean }> = [];
+  try { milestones = JSON.parse(row.milestones || '[]'); } catch {}
+  let tags: string[] = [];
+  try { tags = JSON.parse(row.tags || '[]'); } catch {}
+  return { ...row, milestones, tags };
 }
 
 export const store = {
@@ -1050,9 +1308,9 @@ export const store = {
   },
 
   // Role memories
-  setRoleMemory(chat_id: string, key: string, value: string): RoleMemory {
+  setRoleMemory(chat_id: string, key: string, value: string, memory_type?: string, source?: string): RoleMemory {
     const id = randomUUID();
-    stmts.setRoleMemory.run(id, chat_id, key, value);
+    stmts.setRoleMemory.run(id, chat_id, key, value, memory_type ?? 'general', source ?? '');
     return stmts.getRoleMemory.get(chat_id, key) as RoleMemory;
   },
 
@@ -1064,6 +1322,10 @@ export const store = {
     return stmts.listRoleMemories.all(chat_id) as RoleMemory[];
   },
 
+  listAllRoleMemories(): RoleMemory[] {
+    return stmts.listAllRoleMemories.all() as RoleMemory[];
+  },
+
   deleteRoleMemory(chat_id: string, key: string): boolean {
     const result = stmts.deleteRoleMemory.run(chat_id, key);
     return result.changes > 0;
@@ -1071,6 +1333,224 @@ export const store = {
 
   clearRoleMemories(chat_id: string): void {
     stmts.clearRoleMemories.run(chat_id);
+  },
+
+  // Agent Executions
+  createAgentExecution(data: {
+    title: string;
+    goal: string;
+    mode: string;
+    triggered_by?: string;
+  }): AgentExecution {
+    const id = randomUUID();
+    stmts.insertAgentExecution.run(id, data.title, data.goal, data.mode, data.triggered_by ?? 'manual');
+    return stmts.getAgentExecution.get(id) as AgentExecution;
+  },
+
+  updateAgentExecution(id: string, data: {
+    status?: string;
+    state_data?: string;
+    supervisor_plan?: string | null;
+    result?: string | null;
+    error?: string | null;
+    cost_usd?: number | null;
+    duration_ms?: number | null;
+    lineage_id?: string | null;
+  }): void {
+    stmts.updateAgentExecution.run(
+      data.status ?? null,
+      data.state_data ?? null,
+      data.supervisor_plan ?? null,
+      data.result ?? null,
+      data.error ?? null,
+      data.cost_usd ?? null,
+      data.duration_ms ?? null,
+      data.lineage_id ?? null,
+      id
+    );
+  },
+
+  getAgentExecution(id: string): AgentExecution | undefined {
+    return stmts.getAgentExecution.get(id) as AgentExecution | undefined;
+  },
+
+  listAgentExecutions(limit = 50): AgentExecution[] {
+    return stmts.listAgentExecutions.all(Math.min(limit, 200)) as AgentExecution[];
+  },
+
+  listPendingAgentExecutions(): AgentExecution[] {
+    return stmts.listPendingAgentExecutions.all() as AgentExecution[];
+  },
+
+  deleteAgentExecution(id: string): boolean {
+    const result = stmts.deleteAgentExecution.run(id);
+    return result.changes > 0;
+  },
+
+  // Execution Steps
+  createExecutionStep(data: {
+    execution_id: string;
+    step_index: number;
+    specialist_type: string;
+    input: string;
+  }): AgentExecutionStep {
+    const id = randomUUID();
+    stmts.insertExecutionStep.run(id, data.execution_id, data.step_index, data.specialist_type, data.input);
+    return { id, execution_id: data.execution_id, step_index: data.step_index, specialist_type: data.specialist_type, input: data.input, output: null, status: 'pending', cost_usd: null, duration_ms: null, created_at: new Date().toISOString(), completed_at: null };
+  },
+
+  updateExecutionStep(id: string, data: {
+    status: string;
+    output?: string | null;
+    cost_usd?: number | null;
+    duration_ms?: number | null;
+  }): void {
+    stmts.updateExecutionStep.run(data.status, data.output ?? null, data.cost_usd ?? null, data.duration_ms ?? null, data.status, data.status, id);
+  },
+
+  getExecutionSteps(execution_id: string): AgentExecutionStep[] {
+    return stmts.getExecutionSteps.all(execution_id) as AgentExecutionStep[];
+  },
+
+  deleteExecutionSteps(execution_id: string): void {
+    stmts.deleteExecutionSteps.run(execution_id);
+  },
+
+  // Agent Lineages
+  createLineage(data: {
+    name: string;
+    parent_id?: string | null;
+    version?: number;
+    memory_scope?: string;
+    inherited_memory?: Record<string, string>;
+  }): AgentLineage {
+    const id = randomUUID();
+    stmts.insertLineage.run(
+      id,
+      data.parent_id ?? null,
+      data.name,
+      data.version ?? 1,
+      data.memory_scope ?? 'summary',
+      JSON.stringify(data.inherited_memory ?? {})
+    );
+    return stmts.getLineage.get(id) as AgentLineage;
+  },
+
+  getLineage(id: string): AgentLineage | undefined {
+    return stmts.getLineage.get(id) as AgentLineage | undefined;
+  },
+
+  listLineageChildren(parent_id: string): AgentLineage[] {
+    return stmts.listLineageChildren.all(parent_id) as AgentLineage[];
+  },
+
+  listRootLineages(): AgentLineage[] {
+    return stmts.listRootLineages.all() as AgentLineage[];
+  },
+
+  // Goals
+  createGoal(data: {
+    title: string;
+    description?: string;
+    priority?: number;
+    milestones?: Array<{ title: string; done: boolean }>;
+    tags?: string[];
+  }): GoalEntry {
+    const id = randomUUID();
+    stmts.insertGoal.run(
+      id,
+      data.title,
+      data.description ?? '',
+      data.priority ?? 2,
+      JSON.stringify(data.milestones ?? []),
+      JSON.stringify(data.tags ?? [])
+    );
+    return parseGoalEntry(stmts.getGoal.get(id));
+  },
+
+  updateGoal(id: string, data: Partial<{
+    title: string;
+    description: string;
+    priority: number;
+    status: string;
+    milestones: Array<{ title: string; done: boolean }>;
+    tags: string[];
+  }>): GoalEntry | undefined {
+    stmts.updateGoal.run(
+      data.title ?? null,
+      data.description ?? null,
+      data.priority ?? null,
+      data.status ?? null,
+      data.milestones ? JSON.stringify(data.milestones) : null,
+      data.tags ? JSON.stringify(data.tags) : null,
+      id
+    );
+    const row = stmts.getGoal.get(id);
+    return row ? parseGoalEntry(row) : undefined;
+  },
+
+  getGoal(id: string): GoalEntry | undefined {
+    const row = stmts.getGoal.get(id);
+    return row ? parseGoalEntry(row) : undefined;
+  },
+
+  listGoals(): GoalEntry[] {
+    return (stmts.listGoals.all() as any[]).map(parseGoalEntry);
+  },
+
+  listAllGoals(): GoalEntry[] {
+    return (stmts.listAllGoals.all() as any[]).map(parseGoalEntry);
+  },
+
+  deleteGoal(id: string): boolean {
+    const result = stmts.deleteGoal.run(id);
+    return result.changes > 0;
+  },
+
+  // Goal Loop State
+  getGoalLoopState(): { id: number; status: string; current_plan: string; last_run_at: string | null; next_run_at: string | null; reflection_notes: string; updated_at: string } | undefined {
+    return stmts.getGoalLoopState.get() as any;
+  },
+
+  setGoalLoopState(data: {
+    status: string;
+    current_plan?: string;
+    last_run_at?: string | null;
+    next_run_at?: string | null;
+    reflection_notes?: string;
+  }): void {
+    const existing = stmts.getGoalLoopState.get() as any;
+    stmts.upsertGoalLoopState.run(
+      data.status,
+      data.current_plan ?? existing?.current_plan ?? '{}',
+      data.last_run_at ?? existing?.last_run_at ?? null,
+      data.next_run_at ?? existing?.next_run_at ?? null,
+      data.reflection_notes ?? existing?.reflection_notes ?? '[]'
+    );
+  },
+
+  // Goal Progress Log
+  addGoalProgressLog(data: {
+    goal_id?: string | null;
+    event_type: string;
+    summary: string;
+    execution_id?: string | null;
+  }): void {
+    stmts.insertGoalProgressLog.run(
+      randomUUID(),
+      data.goal_id ?? null,
+      data.event_type,
+      data.summary,
+      data.execution_id ?? null
+    );
+  },
+
+  listGoalProgressLogs(goal_id: string, limit = 20): GoalProgressLog[] {
+    return stmts.listGoalProgressLogs.all(goal_id, limit) as GoalProgressLog[];
+  },
+
+  listAllProgressLogs(limit = 50): GoalProgressLog[] {
+    return stmts.listAllProgressLogs.all(limit) as GoalProgressLog[];
   },
 };
 

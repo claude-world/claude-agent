@@ -1,4 +1,4 @@
-import cron from "node-cron";
+import cron, { type ScheduledTask } from "node-cron";
 import { AgentSession, CliSession } from "./agent.ts";
 import type { CliType } from "./agent.ts";
 import store from "./db.ts";
@@ -42,7 +42,7 @@ async function collectSessionOutput(
 }
 
 class TaskScheduler {
-  private jobs = new Map<string, cron.ScheduledTask>();
+  private jobs = new Map<string, ScheduledTask>();
   private inFlight = new Set<string>();
   private deliveryCallback: ((chatId: string, platform: string, text: string) => void) | null = null;
 

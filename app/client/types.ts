@@ -229,11 +229,94 @@ export interface RoleMemory {
 
 // ---- Page navigation ----
 
-export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects' | 'roles';
+export type Page = 'chat' | 'history' | 'skills' | 'agents' | 'memory' | 'mcp' | 'tasks' | 'secrets' | 'settings' | 'channels' | 'config' | 'projects' | 'roles' | 'executions' | 'goals' | 'lineages';
 
 export interface McpServerConfig {
   type?: string;
   command: string;
   args?: string[];
   env?: Record<string, string>;
+}
+
+// ---- Agentic OS types (Phase 1-4) ----
+
+export type ExecutionMode = 'auto' | 'parallel' | 'sequential' | 'swarm';
+export type ExecutionStatus = 'idle' | 'planning' | 'dispatching' | 'running' | 'aggregating' | 'reflecting' | 'done' | 'error' | 'cancelled';
+export type SpecialistType = 'researcher' | 'writer' | 'analyst' | 'executor' | 'critic';
+
+export interface AgentExecution {
+  id: string;
+  title: string;
+  goal: string;
+  mode: ExecutionMode;
+  status: ExecutionStatus;
+  supervisor_plan: string | null;
+  result: string | null;
+  error: string | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  triggered_by: string;
+  created_at: string;
+  updated_at: string;
+  state_data?: string;  // JSON string
+  lineage_id?: string | null;
+}
+
+export interface AgentExecutionStep {
+  id: string;
+  execution_id: string;
+  step_index: number;
+  specialist_type: SpecialistType;
+  input: string;
+  output: string | null;
+  status: 'pending' | 'running' | 'done' | 'error';
+  cost_usd: number | null;
+  duration_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface AgentLineage {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  version: number;
+  memory_scope: 'full' | 'summary' | 'none';
+  inherited_memory: string; // raw JSON string, parse before use
+  created_at: string;
+  children?: AgentLineage[];
+}
+
+export interface GoalMilestone {
+  title: string;
+  done: boolean;
+}
+
+export interface GoalEntry {
+  id: string;
+  title: string;
+  description: string;
+  priority: 1 | 2 | 3;
+  status: 'active' | 'paused' | 'completed';
+  milestones: GoalMilestone[];
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalLoopState {
+  status: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  reflection_notes: string[];
+  current_plan: Record<string, unknown>;
+}
+
+export interface GoalProgressLog {
+  id: string;
+  goal_id: string;
+  event_type: string;
+  summary: string;
+  execution_id: string | null;
+  created_at: string;
 }

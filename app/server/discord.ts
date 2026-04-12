@@ -9,6 +9,7 @@ import { AgentSession, CliSession, createSession, type CliType } from "./agent.t
 import type { store as StoreType, Role } from "./db.ts";
 import { shouldReply } from "./reply-filter.ts";
 import { AGENT_ROOT } from "./paths.ts";
+import { handleAgentStream, splitMessage, extractMemoryTags, stripMemoryTags } from "./stream-handler.ts";
 import path from "path";
 import fs from "fs";
 import https from "https";
@@ -16,17 +17,6 @@ import http from "http";
 
 // Discord hard limit: 2000 chars. Keep a small buffer.
 const MAX_MSG_LEN = 1900;
-
-function splitMessage(text: string): string[] {
-  if (text.length <= MAX_MSG_LEN) return [text];
-  const parts: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    parts.push(remaining.slice(0, MAX_MSG_LEN));
-    remaining = remaining.slice(MAX_MSG_LEN);
-  }
-  return parts;
-}
 
 /**
  * DiscordBridge listens to DMs and @mentions and routes each user to
@@ -39,6 +29,8 @@ export class DiscordBridge {
   private userToSession = new Map<string, string>();
   // Map: sessionId → AgentSession | CliSession
   private agentSessions = new Map<string, AgentSession | CliSession>();
+  // Per-user message queue to prevent race conditions
+  private userLocks = new Map<string, Promise<void>>();
 
   constructor(store: typeof StoreType) {
     this.store = store;
@@ -133,6 +125,39 @@ export class DiscordBridge {
       // Use channel ID for server channels, user ID for DMs
       const chatKey = isDM ? userId : message.channel.id;
 
+      // Enqueue to prevent race conditions on rapid messages
+      const prevLock = this.userLocks.get(userId) || Promise.resolve();
+      const processPromise = prevLock.then(() => this.processAgentMessage(userId, chatKey, text, message, isDM, !!isMention, username));
+      this.userLocks.set(userId, processPromise.catch(() => {}));
+    });
+
+    this.client.on(Events.Error, (err) => {
+      console.error("[Discord] Client error:", err.message);
+    });
+
+    this.client.login(token).then(() => {
+      console.log(`[Discord] Bridge started, logged in as ${this.client?.user?.tag}`);
+    }).catch((err) => {
+      console.error("[Discord] Login failed:", err.message);
+      if (this.client) {
+        this.client.destroy();
+        this.client = null;
+      }
+    });
+  }
+
+  /**
+   * Process an agent message. Separated for per-user sequential queuing.
+   */
+  private async processAgentMessage(
+    userId: string,
+    chatKey: string,
+    text: string,
+    message: Message,
+    isDM: boolean,
+    isMention: boolean,
+    username: string,
+  ) {
       // Look up role for this chat
       const role = this.store.getRoleByChatId(chatKey) || undefined;
 
@@ -141,7 +166,7 @@ export class DiscordBridge {
       const botName = role?.name || this.client?.user?.displayName || '';
 
       const decision = shouldReply({
-        text, role: role || null, isMention: !!isMention, isReplyToBot, isDM, botName,
+        text, role: role || null, isMention, isReplyToBot, isDM, botName,
       });
 
       if (!decision.shouldReply) return;
@@ -184,7 +209,7 @@ export class DiscordBridge {
           const output = await agentSession.execute(text);
           const reply = output || "(no response)";
           this.store.addMessage(sessionId, { role: "assistant", content: reply });
-          for (const part of splitMessage(reply)) {
+          for (const part of splitMessage(reply, MAX_MSG_LEN)) {
             await this.safeReply(message, part);
           }
         } catch (err) {
@@ -198,90 +223,61 @@ export class DiscordBridge {
       // AgentSession (claude): streaming
       (agentSession as AgentSession).sendMessage(text);
 
-      let fullResponse = "";
-      let pendingText = "";
-      let typingInterval: ReturnType<typeof setInterval> | null = null;
-      let lastSendTime = 0;
-      let firstReply = true;
-      const FLUSH_INTERVAL = 2000;
+      // Gather context for background memory extraction
+      const recentMsgs = this.store.getMessages(sessionId, 20)
+        .map((m: any) => ({ role: m.role, content: m.content || "" }));
 
-      const flushPending = async () => {
-        if (pendingText.trim()) {
-          const toSend = pendingText.trim();
-          pendingText = "";
-          const parts = splitMessage(toSend);
-          for (const part of parts) {
+      let firstReply = true;
+      let fullResponse = "";
+      try {
+        fullResponse = await handleAgentStream({
+          session: agentSession as AgentSession,
+          sendTyping: async () => {
+            try {
+              if (message.channel instanceof TextChannel || isDM) {
+                await (message.channel as any).sendTyping();
+              }
+            } catch {}
+          },
+          sendText: async (text) => {
             if (firstReply) {
-              await this.safeReply(message, part);
+              await this.safeReply(message, text);
               firstReply = false;
             } else {
-              try { await message.channel.send(part); } catch {}
+              try { await (message.channel as TextChannel).send(text); } catch {}
             }
-          }
-          lastSendTime = Date.now();
-        }
-      };
-
-      try {
-        typingInterval = setInterval(async () => {
-          try {
-            if (message.channel instanceof TextChannel || isDM) {
-              await (message.channel as any).sendTyping();
+          },
+          maxMsgLen: MAX_MSG_LEN,
+          recentMessages: recentMsgs,
+          existingMemories: chatMemory,
+          onMemoryExtracted: (mems) => {
+            for (const m of mems) {
+              this.store.setRoleMemory(chatKey, m.key, m.value);
+              console.log(`[Discord] Auto-extracted memory for chat ${chatKey}: ${m.key}`);
             }
-          } catch {}
-          if (pendingText.trim() && Date.now() - lastSendTime > FLUSH_INTERVAL) {
-            await flushPending();
-          }
-        }, 3000);
-
-        for await (const sdkMsg of agentSession.getOutputStream()) {
-          if (sdkMsg.type === "assistant") {
-            const content = sdkMsg.message?.content;
-            if (!content) continue;
-
-            let newText = "";
-            if (typeof content === "string") {
-              newText = content;
-            } else if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type === "text" && block.text) {
-                  newText += block.text;
-                }
-              }
-            }
-
-            if (newText) {
-              fullResponse += newText;
-              pendingText += newText;
-              if (pendingText.includes("\n\n") || pendingText.length > 500) {
-                await flushPending();
-              }
-            }
-          } else if (sdkMsg.type === "result") {
-            break;
-          }
-        }
+          },
+        });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[Discord] Agent error for user ${userId}:`, errorMsg);
-        pendingText = `Error: ${errorMsg}`;
-        fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
-        this.agentSessions.delete(sessionId);
-      } finally {
-        if (typingInterval) clearInterval(typingInterval);
-      }
 
-      await flushPending();
+        const isContextOverflow = /prompt_too_long|context_length|overloaded/i.test(errorMsg);
+        if (isContextOverflow && agentSession instanceof AgentSession) {
+          await (agentSession as AgentSession).rotate();
+          await this.safeReply(message, "[Context full — session refreshed. Please resend your message.]");
+        } else {
+          fullResponse = `Error: ${errorMsg}`;
+          await this.safeReply(message, fullResponse);
+          this.agentSessions.delete(sessionId);
+        }
+      }
 
       // Auto-extract memories from assistant response
-      const memoryPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
-      let memMatch;
-      while ((memMatch = memoryPattern.exec(fullResponse)) !== null) {
-        this.store.setRoleMemory(chatKey, memMatch[1], memMatch[2].trim());
-        console.log(`[Discord] Saved memory for chat ${chatKey}: ${memMatch[1]}`);
+      for (const mem of extractMemoryTags(fullResponse)) {
+        this.store.setRoleMemory(chatKey, mem.key, mem.value);
+        console.log(`[Discord] Saved memory for chat ${chatKey}: ${mem.key}`);
       }
-      // Strip memory tags from the displayed response
-      fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
+      fullResponse = stripMemoryTags(fullResponse);
 
       if (!fullResponse.trim()) {
         await this.safeReply(message, "(no response)");
@@ -290,24 +286,6 @@ export class DiscordBridge {
       if (fullResponse) {
         this.store.addMessage(sessionId, { role: "assistant", content: fullResponse });
       }
-    });
-
-    this.client.on(Events.Error, (err) => {
-      console.error("[Discord] Client error:", err.message);
-    });
-
-    this.client.login(token).then(() => {
-      console.log(
-        `[Discord] Bridge started, logged in as ${this.client?.user?.tag}`
-      );
-    }).catch((err) => {
-      console.error("[Discord] Login failed:", err.message);
-      // Clean up so bridge can be restarted
-      if (this.client) {
-        this.client.destroy();
-        this.client = null;
-      }
-    });
   }
 
   stop() {
@@ -332,7 +310,10 @@ export class DiscordBridge {
     const existing = this.userToSession.get(userId);
     if (existing) return existing;
 
-    const session = this.store.createSession(`Discord:${username}`);
+    // Reuse existing DB session to avoid duplicates across restarts
+    const title = `Discord:${username}`;
+    const found = this.store.findSessionByTitle(title);
+    const session = found || this.store.createSession(title);
     this.userToSession.set(userId, session.id);
     return session.id;
   }

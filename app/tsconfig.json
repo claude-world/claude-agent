@@ -6,11 +6,11 @@
     "esModuleInterop": true,
     "strict": true,
     "jsx": "react-jsx",
-    "outDir": "dist",
     "rootDir": ".",
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "declaration": true
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": ["server/**/*.ts", "client/**/*.ts", "client/**/*.tsx"],
   "exclude": ["node_modules", "dist"]

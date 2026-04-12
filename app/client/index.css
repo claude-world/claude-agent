@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 @layer base {
   html {
@@ -44,35 +42,37 @@
   }
 
   .input-base {
-    @apply bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-gray-100 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
+    @apply bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-gray-100 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
   }
 
+  /* badge base — also used standalone as className="badge ..." */
   .badge {
     @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
   }
 
+  /* badge variants include all base styles (v4: @apply cannot reference custom classes) */
   .badge-green {
-    @apply badge bg-green-900 text-green-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900 text-green-300;
   }
 
   .badge-blue {
-    @apply badge bg-blue-900 text-blue-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-900 text-blue-300;
   }
 
   .badge-yellow {
-    @apply badge bg-yellow-900 text-yellow-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-900 text-yellow-300;
   }
 
   .badge-purple {
-    @apply badge bg-purple-900 text-purple-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-900 text-purple-300;
   }
 
   .badge-orange {
-    @apply badge bg-orange-900 text-orange-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-900 text-orange-300;
   }
 
   .badge-gray {
-    @apply badge bg-gray-700 text-gray-300;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300;
   }
 }
 

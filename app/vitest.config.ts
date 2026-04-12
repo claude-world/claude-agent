@@ -16,7 +16,7 @@ export default defineConfig({
     testTimeout: 10000,
     // Single thread: all test files share one SQLite DB via HOME, so parallel workers cause "database is locked"
     pool: 'forks',
-    poolOptions: { forks: { singleFork: true } },
+    forkOptions: { singleFork: true },
     env: {
       HOME: testHome,
     },

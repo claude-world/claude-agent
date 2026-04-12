@@ -3,6 +3,7 @@ import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT, type CliTyp
 import type { store as StoreType, Role } from "./db.ts";
 import { shouldReply } from "./reply-filter.ts";
 import { AGENT_ROOT } from "./paths.ts";
+import { handleAgentStream, splitMessage, extractMemoryTags, stripMemoryTags } from "./stream-handler.ts";
 import path from "path";
 import fs from "fs";
 import https from "https";
@@ -10,17 +11,6 @@ import http from "http";
 
 // Maximum Telegram message length (hard limit: 4096, keep a buffer)
 const MAX_MSG_LEN = 4000;
-
-function splitMessage(text: string): string[] {
-  if (text.length <= MAX_MSG_LEN) return [text];
-  const parts: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    parts.push(remaining.slice(0, MAX_MSG_LEN));
-    remaining = remaining.slice(MAX_MSG_LEN);
-  }
-  return parts;
-}
 
 /**
  * TelegramBridge connects a Telegram bot to agent sessions.
@@ -34,6 +24,9 @@ export class TelegramBridge {
   private chatToSession = new Map<string, string>();
   // Map: sessionId → AgentSession | CliSession
   private agentSessions = new Map<string, AgentSession | CliSession>();
+  // Per-chat message queue to prevent race conditions when rapid messages arrive.
+  // Inspired by Claude Code's generation tracking in AgentSession.
+  private chatLocks = new Map<string, Promise<void>>();
 
   constructor(store: typeof StoreType) {
     this.store = store;
@@ -159,73 +152,26 @@ export class TelegramBridge {
           (configSession as AgentSession).sendMessage(enrichedPrompt);
 
           let fullResponse = "";
-          let pendingText = "";
-          let typingInterval: ReturnType<typeof setInterval> | null = null;
-          let lastSendTime = 0;
-          const FLUSH_INTERVAL = 2000;
-
-          const flushPending = async () => {
-            if (pendingText.trim()) {
-              const toSend = pendingText.trim();
-              pendingText = "";
-              const parts = splitMessage(toSend);
-              for (const part of parts) {
-                await this.safeSend(chatId, part);
-              }
-              lastSendTime = Date.now();
-            }
-          };
-
           try {
-            typingInterval = setInterval(async () => {
-              try { await this.bot!.sendChatAction(chatId, "typing"); } catch {}
-              if (pendingText.trim() && Date.now() - lastSendTime > FLUSH_INTERVAL) {
-                await flushPending();
-              }
-            }, 3000);
-
-            for await (const sdkMsg of (configSession as AgentSession).getOutputStream()) {
-              if (sdkMsg.type === "assistant") {
-                const content = sdkMsg.message?.content;
-                if (!content) continue;
-                let newText = "";
-                if (typeof content === "string") {
-                  newText = content;
-                } else if (Array.isArray(content)) {
-                  for (const block of content) {
-                    if (block.type === "text" && block.text) newText += block.text;
-                  }
-                }
-                if (newText) {
-                  fullResponse += newText;
-                  pendingText += newText;
-                  if (pendingText.includes("\n\n") || pendingText.length > 500) {
-                    await flushPending();
-                  }
-                }
-              } else if (sdkMsg.type === "result") {
-                break;
-              }
-            }
+            fullResponse = await handleAgentStream({
+              session: configSession as AgentSession,
+              sendTyping: async () => { try { await this.bot!.sendChatAction(chatId, "typing"); } catch {} },
+              sendText: async (text) => { await this.safeSend(chatId, text); },
+              maxMsgLen: MAX_MSG_LEN,
+            });
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
-            pendingText = `Error: ${errorMsg}`;
-            fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
+            fullResponse = `Error: ${errorMsg}`;
+            await this.safeSend(chatId, fullResponse);
             this.agentSessions.delete(configSessionId);
-          } finally {
-            if (typingInterval) clearInterval(typingInterval);
           }
-
-          await flushPending();
 
           // Auto-extract memories from config response
-          const configMemPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
-          let configMemMatch;
-          while ((configMemMatch = configMemPattern.exec(fullResponse)) !== null) {
-            this.store.setRoleMemory(chatId, configMemMatch[1], configMemMatch[2].trim());
-            console.log(`[Telegram] Saved memory for chat ${chatId}: ${configMemMatch[1]}`);
+          for (const mem of extractMemoryTags(fullResponse)) {
+            this.store.setRoleMemory(chatId, mem.key, mem.value);
+            console.log(`[Telegram] Saved memory for chat ${chatId}: ${mem.key}`);
           }
-          fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
+          fullResponse = stripMemoryTags(fullResponse);
 
           if (!fullResponse.trim()) await this.safeSend(chatId, "(no response)");
           if (fullResponse) {
@@ -235,6 +181,31 @@ export class TelegramBridge {
         return;
       }
 
+      // Enqueue message processing to prevent race conditions.
+      // Inspired by Claude Code's generation tracking (src/agent.ts).
+      const prevLock = this.chatLocks.get(chatId) || Promise.resolve();
+      const processPromise = prevLock.then(() => this.processAgentMessage(chatId, text, msg, botUsername, botId));
+      this.chatLocks.set(chatId, processPromise.catch(() => {}));
+    });
+
+    this.bot.on("polling_error", (err) => {
+      console.error("[Telegram] Polling error:", err.message);
+    });
+
+    console.log("[Telegram] Bridge started, polling for messages");
+  }
+
+  /**
+   * Process an agent message for a chat. Separated from the message handler
+   * to enable per-chat sequential queuing (prevents race conditions).
+   */
+  private async processAgentMessage(
+    chatId: string,
+    text: string,
+    msg: TelegramBot.Message,
+    botUsername: string,
+    botId: number,
+  ) {
       // Look up role for this chat
       const role = this.store.getRoleByChatId(chatId) || undefined;
 
@@ -291,7 +262,7 @@ export class TelegramBridge {
           const output = await agentSession.execute(text);
           const reply = output || "(no response)";
           this.store.addMessage(sessionId, { role: "assistant", content: reply });
-          for (const part of splitMessage(reply)) {
+          for (const part of splitMessage(reply, MAX_MSG_LEN)) {
             await this.safeSend(chatId, part);
           }
         } catch (err) {
@@ -305,107 +276,56 @@ export class TelegramBridge {
       // AgentSession (claude): streaming
       (agentSession as AgentSession).sendMessage(text);
 
+      // Gather context for background memory extraction
+      const recentMsgs = this.store.getMessages(sessionId, 20)
+        .map((m: any) => ({ role: m.role, content: m.content || "" }));
+
       let fullResponse = "";
-      let pendingText = "";
-      let typingInterval: ReturnType<typeof setInterval> | null = null;
-      let lastSendTime = 0;
-      const FLUSH_INTERVAL = 2000; // Send every 2 seconds if there's pending text
-
-      const flushPending = async () => {
-        if (pendingText.trim()) {
-          const toSend = pendingText.trim();
-          pendingText = "";
-          const parts = splitMessage(toSend);
-          for (const part of parts) {
-            await this.safeSend(chatId, part);
-          }
-          lastSendTime = Date.now();
-        }
-      };
-
       try {
-        // Keep typing indicator alive + periodic flush
-        typingInterval = setInterval(async () => {
-          try {
-            await this.bot!.sendChatAction(chatId, "typing");
-          } catch {}
-          // Flush pending text if enough time has passed
-          if (pendingText.trim() && Date.now() - lastSendTime > FLUSH_INTERVAL) {
-            await flushPending();
-          }
-        }, 3000);
-
-        for await (const sdkMsg of agentSession.getOutputStream()) {
-          if (sdkMsg.type === "assistant") {
-            const content = sdkMsg.message?.content;
-            if (!content) continue;
-
-            let newText = "";
-            if (typeof content === "string") {
-              newText = content;
-            } else if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type === "text" && block.text) {
-                  newText += block.text;
-                }
-              }
+        fullResponse = await handleAgentStream({
+          session: agentSession as AgentSession,
+          sendTyping: async () => { try { await this.bot!.sendChatAction(chatId, "typing"); } catch {} },
+          sendText: async (text) => { await this.safeSend(chatId, text); },
+          maxMsgLen: MAX_MSG_LEN,
+          recentMessages: recentMsgs,
+          existingMemories: chatMemory,
+          onMemoryExtracted: (mems) => {
+            for (const m of mems) {
+              this.store.setRoleMemory(chatId, m.key, m.value);
+              console.log(`[Telegram] Auto-extracted memory for chat ${chatId}: ${m.key}`);
             }
-
-            if (newText) {
-              fullResponse += newText;
-              pendingText += newText;
-
-              // Send immediately if we have a complete paragraph or enough text
-              if (pendingText.includes("\n\n") || pendingText.length > 500) {
-                await flushPending();
-              }
-            }
-          } else if (sdkMsg.type === "result") {
-            break;
-          }
-        }
+          },
+        });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`[Telegram] Agent error for chat ${chatId}:`, errorMsg);
-        pendingText = `Error: ${errorMsg}`;
-        fullResponse = pendingText; // Mark that we have content to prevent "(no response)"
-        this.agentSessions.delete(sessionId);
-      } finally {
-        if (typingInterval) clearInterval(typingInterval);
-      }
 
-      // Flush any remaining text
-      await flushPending();
+        // Auto-recover from context overflow (inspired by Claude Code autoCompact)
+        const isContextOverflow = /prompt_too_long|context_length|overloaded/i.test(errorMsg);
+        if (isContextOverflow && agentSession instanceof AgentSession) {
+          await (agentSession as AgentSession).rotate();
+          await this.safeSend(chatId, "[Context full — session refreshed. Please resend your message.]");
+        } else {
+          fullResponse = `Error: ${errorMsg}`;
+          await this.safeSend(chatId, fullResponse);
+          this.agentSessions.delete(sessionId);
+        }
+      }
 
       // Auto-extract memories from assistant response
-      const memoryPattern = /\[SAVE_MEMORY\]\s*([\w_-]+):\s*(.+)/g;
-      let memMatch;
-      while ((memMatch = memoryPattern.exec(fullResponse)) !== null) {
-        this.store.setRoleMemory(chatId, memMatch[1], memMatch[2].trim());
-        console.log(`[Telegram] Saved memory for chat ${chatId}: ${memMatch[1]}`);
+      for (const mem of extractMemoryTags(fullResponse)) {
+        this.store.setRoleMemory(chatId, mem.key, mem.value);
+        console.log(`[Telegram] Saved memory for chat ${chatId}: ${mem.key}`);
       }
-      // Strip memory tags from the displayed response
-      fullResponse = fullResponse.replace(/\[SAVE_MEMORY\]\s*[\w_-]+:\s*.+/g, '').trim();
+      fullResponse = stripMemoryTags(fullResponse);
 
-      // If agent produced nothing, send a fallback
       if (!fullResponse.trim()) {
         await this.safeSend(chatId, "(no response)");
       }
 
-      // Store full response in DB
       if (fullResponse) {
-        this.store.addMessage(sessionId, {
-          role: "assistant",
-          content: fullResponse,
-        });
+        this.store.addMessage(sessionId, { role: "assistant", content: fullResponse });
       }
-    });
-
-    this.bot.on("polling_error", (err) => {
-      console.error("[Telegram] Polling error:", err.message);
-    });
-
-    console.log("[Telegram] Bridge started, polling for messages");
   }
 
   stop() {
@@ -426,7 +346,10 @@ export class TelegramBridge {
     const existing = this.chatToSession.get(chatId);
     if (existing) return existing;
 
-    const session = this.store.createSession(`Telegram:${chatId}`);
+    // Reuse existing DB session to avoid duplicates across restarts
+    const title = `Telegram:${chatId}`;
+    const found = this.store.findSessionByTitle(title);
+    const session = found || this.store.createSession(title);
     this.chatToSession.set(chatId, session.id);
     return session.id;
   }
@@ -436,7 +359,9 @@ export class TelegramBridge {
     const existing = this.chatToSession.get(configKey);
     if (existing) return existing;
 
-    const session = this.store.createSession(`ConfigBot:${chatId}`);
+    const title = `ConfigBot:${chatId}`;
+    const found = this.store.findSessionByTitle(title);
+    const session = found || this.store.createSession(title);
     this.chatToSession.set(configKey, session.id);
     return session.id;
   }
@@ -484,10 +409,10 @@ export class TelegramBridge {
 
     // Audio
     if (msg.audio) {
-      const filePath = await this.downloadTelegramFile(msg.audio.file_id, mediaDir, "audio",
-        msg.audio.file_name);
+      const audioFileName = (msg.audio as any).file_name as string | undefined;
+      const filePath = await this.downloadTelegramFile(msg.audio.file_id, mediaDir, "audio", audioFileName);
       if (filePath) {
-        parts.push(`[User sent an audio file: ${msg.audio.title || msg.audio.file_name || "audio"} (${msg.audio.duration}s), saved to: ${filePath}]\nUse speech-to-text to transcribe if needed.`);
+        parts.push(`[User sent an audio file: ${msg.audio.title || audioFileName || "audio"} (${msg.audio.duration}s), saved to: ${filePath}]\nUse speech-to-text to transcribe if needed.`);
       }
     }
 
@@ -535,7 +460,7 @@ export class TelegramBridge {
         : `${prefix}-${Date.now()}${ext}`;
       const localPath = path.join(mediaDir, safeName);
 
-      const fileUrl = `https://api.telegram.org/file/bot${this.bot!.token}/${fileInfo.file_path}`;
+      const fileUrl = `https://api.telegram.org/file/bot${(this.bot as any).token}/${fileInfo.file_path}`;
 
       await new Promise<void>((resolve, reject) => {
         const file = fs.createWriteStream(localPath);

@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import useWebSocket, { ReadyState } from 'react-use-websocket';
+import _rwsDefault, { ReadyState } from 'react-use-websocket';
+// Rolldown/Vite 8 CJS interop: probe all possible locations for the hook
+const useWebSocket = (() => {
+  if (typeof _rwsDefault === 'function') return _rwsDefault;
+  const a = _rwsDefault as any;
+  if (typeof a?.default === 'function') return a.default;
+  if (typeof a?.useWebSocket === 'function') return a.useWebSocket;
+  console.error('[rws] Could not resolve useWebSocket, got:', typeof _rwsDefault, Object.keys(a || {}));
+  return _rwsDefault;
+})() as typeof _rwsDefault;
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Session, DbMessage, WsOutbound } from '../types';

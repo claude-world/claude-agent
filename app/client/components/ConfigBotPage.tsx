@@ -1,5 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import useWebSocket, { ReadyState } from 'react-use-websocket';
+import _rwsConfig, { ReadyState } from 'react-use-websocket';
+const useWebSocket = (() => {
+  if (typeof _rwsConfig === 'function') return _rwsConfig;
+  const a = _rwsConfig as any;
+  if (typeof a?.default === 'function') return a.default;
+  if (typeof a?.useWebSocket === 'function') return a.useWebSocket;
+  return _rwsConfig;
+})() as typeof _rwsConfig;
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Session, DbMessage } from '../types';
