@@ -597,6 +597,7 @@ function UpdateChecker() {
     lastChecked: string | null;
     releaseUrl: string | null;
   } | null>(null);
+  const [desktopState, setDesktopState] = useState<DesktopUpdateState | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
 
@@ -605,21 +606,60 @@ function UpdateChecker() {
       .then(r => r.json())
       .then(setInfo)
       .catch(() => {});
+
+    if (!window.claudeAgentDesktop) return;
+
+    window.claudeAgentDesktop.getUpdateState()
+      .then(setDesktopState)
+      .catch(() => {});
+
+    return window.claudeAgentDesktop.onUpdateState(setDesktopState);
   }, []);
 
   const checkNow = async () => {
     setChecking(true);
     setCheckError(null);
+
+    let nextError: string | null = null;
+
     try {
       const res = await fetch('/api/check-update', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setInfo(data);
     } catch (err) {
-      setCheckError((err as Error).message);
+      nextError = (err as Error).message;
     }
+
+    if (window.claudeAgentDesktop) {
+      try {
+        const state = await window.claudeAgentDesktop.checkForUpdates();
+        setDesktopState(state);
+      } catch (err) {
+        nextError ||= (err as Error).message;
+      }
+    }
+
+    setCheckError(nextError);
     setChecking(false);
   };
+
+  const installNow = async () => {
+    if (!window.claudeAgentDesktop) return;
+    setCheckError(null);
+    try {
+      const result = await window.claudeAgentDesktop.installUpdate();
+      if (!result.ok) setCheckError('Update is not ready to install yet.');
+    } catch (err) {
+      setCheckError((err as Error).message);
+    }
+  };
+
+  const effectiveCurrentVersion = desktopState?.currentVersion || info?.currentVersion || '…';
+  const effectiveLatestVersion = desktopState?.latestVersion || info?.latestVersion || null;
+  const hasDesktopUpdate = Boolean(desktopState?.available || desktopState?.downloaded);
+  const hasAnyUpdate = hasDesktopUpdate || Boolean(info?.hasUpdate);
+  const isBusy = checking || Boolean(desktopState?.checking || desktopState?.downloading);
 
   return (
     <div className="p-3 rounded-lg border border-gray-700 space-y-3">
@@ -627,13 +667,21 @@ function UpdateChecker() {
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-400">{t('settings.updateCurrentVersion')}</span>
-            <span className="badge-gray font-mono">v{info?.currentVersion ?? '…'}</span>
-            {info?.hasUpdate && info.latestVersion && (
-              <span className="badge text-xs bg-yellow-500/20 text-yellow-300 border border-yellow-600 px-1.5 py-0.5 rounded">
-                v{info.latestVersion} {t('settings.updateAvailable')}
+            <span className="badge-gray font-mono">v{effectiveCurrentVersion}</span>
+            {desktopState?.downloaded && (
+              <span className="badge-green text-xs">{t('settings.updateReady') || 'Ready to install'}</span>
+            )}
+            {desktopState?.downloading && (
+              <span className="badge text-xs bg-blue-500/20 text-blue-300 border border-blue-600 px-1.5 py-0.5 rounded">
+                {t('settings.updateDownloading') || 'Downloading'} {desktopState.progressPercent ?? 0}%
               </span>
             )}
-            {info && !info.hasUpdate && info.latestVersion && (
+            {!desktopState?.downloaded && !desktopState?.downloading && hasAnyUpdate && effectiveLatestVersion && (
+              <span className="badge text-xs bg-yellow-500/20 text-yellow-300 border border-yellow-600 px-1.5 py-0.5 rounded">
+                v{effectiveLatestVersion} {t('settings.updateAvailable')}
+              </span>
+            )}
+            {info && !hasAnyUpdate && info.latestVersion && (
               <span className="badge-green text-xs">{t('settings.updateUpToDate')}</span>
             )}
           </div>
@@ -642,28 +690,39 @@ function UpdateChecker() {
               {t('settings.updateLastChecked')} {new Date(info.lastChecked).toLocaleString()}
             </p>
           )}
+          {desktopState?.supported && (
+            <p className="text-xs text-gray-500">{t('settings.updateAutoHint') || 'Desktop app updates download in the background and can be installed here once ready.'}</p>
+          )}
         </div>
-        <button
-          onClick={checkNow}
-          disabled={checking}
-          className="btn-secondary text-xs py-1.5 px-3 flex-shrink-0"
-        >
-          {checking ? t('settings.updateChecking') : t('settings.updateCheckNow')}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {desktopState?.downloaded && (
+            <button
+              onClick={installNow}
+              className="btn-primary text-xs py-1.5 px-3 flex-shrink-0"
+            >
+              {t('settings.updateInstallNow') || 'Install & Restart'}
+            </button>
+          )}
+          <button
+            onClick={checkNow}
+            disabled={isBusy}
+            className="btn-secondary text-xs py-1.5 px-3 flex-shrink-0"
+          >
+            {desktopState?.downloading
+              ? `${t('settings.updateDownloading') || 'Downloading'}…`
+              : isBusy
+                ? t('settings.updateChecking')
+                : t('settings.updateCheckNow')}
+          </button>
+        </div>
       </div>
 
-      {checkError && <p className="text-xs text-red-400">{checkError}</p>}
-      {info?.hasUpdate && info.releaseUrl && (
+      {(desktopState?.error || checkError) && (
+        <p className="text-xs text-red-400">{desktopState?.error || checkError}</p>
+      )}
+      {hasAnyUpdate && info?.releaseUrl && (
         <div className="p-2.5 rounded border border-yellow-700 bg-yellow-900/20 flex items-center justify-between gap-3">
-          <p className="text-xs text-yellow-300">
-            {t('settings.updateBanner', { version: `v${info.latestVersion}` })
-              .split('git pull')
-              .reduce<React.ReactNode[]>((acc, part, i, arr) =>
-                i < arr.length - 1
-                  ? [...acc, part, <code key={i} className="font-mono bg-yellow-950/50 px-1 rounded">git pull</code>]
-                  : [...acc, part],
-              [])}
-          </p>
+          <p className="text-xs text-yellow-300">{t('settings.updateBanner', { version: `v${effectiveLatestVersion}` })}</p>
           <a
             href={info.releaseUrl}
             target="_blank"

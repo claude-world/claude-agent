@@ -98,18 +98,26 @@ class TaskScheduler {
       return;
     }
 
-    const job = cron.schedule(
-      task.schedule,
-      () => {
-        // Fire-and-forget; errors are captured inside executeTask
-        this.executeTask(taskId, "schedule").catch((err) => {
-          console.error(`[Scheduler] Unhandled error in executeTask ${taskId}:`, err);
-        });
-      },
-      {
-        timezone: task.timezone || "Asia/Taipei",
-      }
-    );
+    let job: ScheduledTask;
+    try {
+      job = cron.schedule(
+        task.schedule,
+        () => {
+          // Fire-and-forget; errors are captured inside executeTask
+          this.executeTask(taskId, "schedule").catch((err) => {
+            console.error(`[Scheduler] Unhandled error in executeTask ${taskId}:`, err);
+          });
+        },
+        {
+          timezone: task.timezone || "Asia/Taipei",
+        }
+      );
+    } catch (err) {
+      console.warn(
+        `[Scheduler] Failed to register job ${taskId} (${task.name}): ${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
 
     this.jobs.set(taskId, job);
     console.log(
@@ -138,6 +146,7 @@ class TaskScheduler {
    * update it when the agent finishes or fails.
    */
   async executeTask(taskId: string, triggeredBy: string = "manual") {
+    const agentRoot = process.env.AGENT_ROOT || AGENT_ROOT;
     if (this.inFlight.has(taskId)) {
       console.log(`[Scheduler] Task ${taskId} is already running, skipping`);
       return;
@@ -162,7 +171,7 @@ class TaskScheduler {
 
       if (cli !== 'claude') {
         // Use CliSession for non-Claude CLIs
-        const cliSession = new CliSession(cli, AGENT_ROOT);
+        const cliSession = new CliSession(cli, agentRoot);
         try {
           const output = await cliSession.execute(task.prompt);
           const duration_ms = Date.now() - startedAt;

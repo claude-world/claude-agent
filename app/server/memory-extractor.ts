@@ -10,7 +10,7 @@
  * Complements the inline [SAVE_MEMORY] tag system — both work together.
  */
 
-import { spawn, execSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import path from "path";
 import fs from "fs";
 
@@ -48,22 +48,25 @@ export function shouldExtractMemories(turnCount: number): boolean {
 }
 
 function resolveClaudePath(): string {
+  const locator = process.platform === "win32" ? "where" : "which";
   try {
-    return execSync("/bin/zsh -lc 'which claude'", {
+    const resolved = execFileSync(locator, ["claude"], {
       encoding: "utf8",
       timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
     }).trim();
-  } catch {
-    const candidates = [
-      path.join(process.env.HOME || "", ".npm-global/bin/claude"),
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return "claude";
+    const firstLine = resolved.split(/\r?\n/).find(Boolean);
+    if (firstLine) return firstLine;
+  } catch {}
+  const candidates = [
+    path.join(process.env.HOME || "", ".npm-global/bin/claude"),
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
   }
+  return "claude";
 }
 
 /**

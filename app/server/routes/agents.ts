@@ -1,6 +1,7 @@
 import { Router } from "express";
 import path from "path";
 import fs from "fs";
+import store from "../db.ts";
 
 function parseAgentFrontmatter(content: string) {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -28,10 +29,12 @@ function parseAgentFrontmatter(content: string) {
 
 export function createAgentsRouter(deps: { agentRoot: string }): Router {
   const router = Router();
-  const AGENTS_DIR = path.join(deps.agentRoot, ".claude/agents");
+  const getAgentsDir = () =>
+    path.join(store.getSetting("agent_root") || process.env.AGENT_ROOT || deps.agentRoot, ".claude/agents");
 
   router.get("/", (_req, res) => {
     try {
+      const AGENTS_DIR = getAgentsDir();
       if (!fs.existsSync(AGENTS_DIR)) return res.json([]);
       const agents = fs.readdirSync(AGENTS_DIR, { withFileTypes: true })
         .filter((f) => f.isFile() && f.name.endsWith(".md"))
@@ -47,6 +50,7 @@ export function createAgentsRouter(deps: { agentRoot: string }): Router {
 
   router.get("/export", (_req, res) => {
     try {
+      const AGENTS_DIR = getAgentsDir();
       if (!fs.existsSync(AGENTS_DIR)) return res.json({ agents: [] });
       const bundle: { name: string; content: string }[] = [];
       for (const f of fs.readdirSync(AGENTS_DIR, { withFileTypes: true })) {
@@ -60,6 +64,7 @@ export function createAgentsRouter(deps: { agentRoot: string }): Router {
 
   router.post("/import", (req, res) => {
     try {
+      const AGENTS_DIR = getAgentsDir();
       const { name, content } = req.body ?? {};
       if (!name || !content) return res.status(400).json({ error: "name and content required" });
       const sName = name.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
@@ -69,9 +74,27 @@ export function createAgentsRouter(deps: { agentRoot: string }): Router {
     } catch (err) { res.status(500).json({ error: String(err) }); }
   });
 
+  router.post("/import-bundle", (req, res) => {
+    try {
+      const AGENTS_DIR = getAgentsDir();
+      const { agents } = req.body ?? {};
+      if (!Array.isArray(agents)) return res.status(400).json({ error: "agents array required" });
+      if (!fs.existsSync(AGENTS_DIR)) fs.mkdirSync(AGENTS_DIR, { recursive: true });
+      const results: { name: string; success: boolean }[] = [];
+      for (const { name, content } of agents) {
+        if (!name || !content) continue;
+        const sName = name.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+        fs.writeFileSync(path.join(AGENTS_DIR, `${sName}.md`), content, "utf8");
+        results.push({ name: sName, success: true });
+      }
+      res.json({ imported: results.length, results });
+    } catch (err) { res.status(500).json({ error: String(err) }); }
+  });
+
   // NOTE: must come AFTER /export to avoid "export" matching :name
   router.get("/:name/raw", (req, res) => {
     try {
+      const AGENTS_DIR = getAgentsDir();
       const sName = path.basename(req.params.name);
       const filePath = path.join(AGENTS_DIR, `${sName}.md`);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Agent not found" });
@@ -81,6 +104,7 @@ export function createAgentsRouter(deps: { agentRoot: string }): Router {
 
   router.delete("/:name", (req, res) => {
     try {
+      const AGENTS_DIR = getAgentsDir();
       const sName = path.basename(req.params.name);
       const filePath = path.join(AGENTS_DIR, `${sName}.md`);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Agent not found" });

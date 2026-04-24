@@ -143,6 +143,20 @@ export function createAgenticRouter({ broadcastExecution }: AgenticRouterDeps): 
   });
 
   /**
+   * DELETE /api/executions/lineages/:id
+   * Delete a lineage and its descendants.
+   */
+  router.delete("/lineages/:id", (req, res) => {
+    try {
+      const deleted = store.deleteLineage(req.params.id);
+      if (!deleted) return res.status(404).json({ error: "Lineage not found" });
+      return res.json({ deleted: true });
+    } catch (err) {
+      return res.status(500).json({ error: "Delete failed" });
+    }
+  });
+
+  /**
    * GET /api/executions/:id
    * Get execution with its steps.
    */

@@ -2,6 +2,7 @@ import { Router } from "express";
 import path from "path";
 import fs from "fs";
 import { safeName } from "../middleware/security.ts";
+import store from "../db.ts";
 
 const SKILL_CATEGORIES: Record<string, string> = {
   'memory-manager': 'Core', 'task-tracker': 'Core', 'daily-briefing': 'Core',
@@ -49,10 +50,12 @@ function parseSkillFrontmatter(content: string) {
 
 export function createSkillsRouter(deps: { agentRoot: string }): Router {
   const router = Router();
-  const skillsDir = path.join(deps.agentRoot, ".claude/skills");
+  const getSkillsDir = () =>
+    path.join(store.getSetting("agent_root") || process.env.AGENT_ROOT || deps.agentRoot, ".claude/skills");
 
   router.get("/", (_req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       if (!fs.existsSync(skillsDir)) return res.json([]);
       const skills = fs.readdirSync(skillsDir, { withFileTypes: true })
         .filter((d) => d.isDirectory())
@@ -75,6 +78,7 @@ export function createSkillsRouter(deps: { agentRoot: string }): Router {
 
   router.get("/export", (_req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       if (!fs.existsSync(skillsDir)) return res.json({ skills: [] });
       const bundle: { name: string; content: string }[] = [];
       for (const d of fs.readdirSync(skillsDir, { withFileTypes: true })) {
@@ -89,6 +93,7 @@ export function createSkillsRouter(deps: { agentRoot: string }): Router {
 
   router.get("/:name/raw", (req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       const skillFile = path.join(skillsDir, safeName(req.params.name), "SKILL.md");
       if (!fs.existsSync(skillFile)) return res.status(404).json({ error: "Skill not found" });
       res.json({ name: req.params.name, content: fs.readFileSync(skillFile, "utf8") });
@@ -97,6 +102,7 @@ export function createSkillsRouter(deps: { agentRoot: string }): Router {
 
   router.post("/import", (req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       const { name, content } = req.body ?? {};
       if (!name || !content) return res.status(400).json({ error: "name and content required" });
       const sName = name.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
@@ -109,6 +115,7 @@ export function createSkillsRouter(deps: { agentRoot: string }): Router {
 
   router.post("/import-bundle", (req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       const { skills } = req.body ?? {};
       if (!Array.isArray(skills)) return res.status(400).json({ error: "skills array required" });
       const results: { name: string; success: boolean }[] = [];
@@ -126,6 +133,7 @@ export function createSkillsRouter(deps: { agentRoot: string }): Router {
 
   router.delete("/:name", (req, res) => {
     try {
+      const skillsDir = getSkillsDir();
       const dir = path.join(skillsDir, safeName(req.params.name));
       if (!fs.existsSync(dir)) return res.status(404).json({ error: "Skill not found" });
       fs.rmSync(dir, { recursive: true });

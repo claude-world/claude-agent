@@ -1,4 +1,4 @@
-import { spawn, execSync, ChildProcess } from "child_process";
+import { spawn, execFileSync, ChildProcess } from "child_process";
 import { createInterface } from "readline";
 import path from "path";
 import fs from "fs";
@@ -11,29 +11,73 @@ export { CONFIG_BOT_PROMPT } from "./prompts/config-bot.ts";
 
 /**
  * Resolve the path to the `claude` executable.
- * Searches: login shell PATH, common global install locations.
+ * Searches: PATH lookup, then common global install locations.
  */
-function resolveClaudePath(): string {
+function getAugmentedPath(): string {
+  if (process.platform === "win32") {
+    return process.env.PATH || "";
+  }
   try {
-    return execSync("/bin/zsh -lc 'which claude'", {
+    const shellPath = process.env.SHELL || (fs.existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash");
+    return execFileSync(shellPath, ["-lc", "printf %s \"$PATH\""], {
       encoding: "utf8",
       timeout: 5000,
+      env: process.env,
     }).trim();
   } catch {
-    // Fallback: common install locations
-    const candidates = [
-      path.join(process.env.HOME || "", ".npm-global/bin/claude"),
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return "claude"; // hope it's in PATH
+    return process.env.PATH || "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin";
   }
 }
 
-const CLAUDE_PATH = resolveClaudePath();
+const AUGMENTED_PATH = getAugmentedPath();
+
+function resolveBinary(command: string, candidates: string[] = []): string {
+  const locator = process.platform === "win32" ? "where" : "which";
+  try {
+    const resolved = execFileSync(locator, [command], {
+      encoding: "utf8",
+      timeout: 5000,
+      env: { ...process.env, PATH: AUGMENTED_PATH },
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return resolved.split(/\r?\n/).find(Boolean) || command;
+  } catch {
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return command;
+  }
+}
+
+function resolveClaudePath(): string {
+  return resolveBinary("claude", [
+    path.join(process.env.HOME || "", ".npm-global/bin/claude"),
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+  ]);
+}
+
+function buildChildEnv(extraEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return { ...process.env, PATH: AUGMENTED_PATH, ...extraEnv };
+}
+
+function spawnWithResolvedEnv(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env?: Record<string, string>;
+    stdio?: ["pipe", "pipe", "pipe"];
+    detached?: boolean;
+  }
+): ChildProcess {
+  return spawn(command, args, {
+    cwd: options.cwd,
+    env: buildChildEnv(options.env),
+    stdio: options.stdio || ["pipe", "pipe", "pipe"],
+    detached: options.detached ?? process.platform !== "win32",
+  });
+}
 
 // Environment variable names that must never be overridden by user secrets
 const RESERVED_ENV = new Set([
@@ -41,17 +85,30 @@ const RESERVED_ENV = new Set([
 ]);
 
 /**
- * Kill a process and its entire process group.
- * Using a negative PID sends the signal to the whole group,
- * ensuring child processes spawned by the shell wrapper are also terminated.
+ * Kill a process and its entire process tree.
  */
 function killProcessGroup(proc: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
+  if (!proc.pid) return;
+  if (process.platform === "win32") {
+    // taskkill handles the full child process tree on Windows.
+    try {
+      const args = ["/pid", String(proc.pid), "/t"];
+      if (signal === "SIGKILL") args.push("/f");
+      execFileSync("taskkill", args, { stdio: "ignore" });
+      return;
+    } catch {
+      try { proc.kill(signal); } catch {}
+    }
+    return;
+  }
   try {
     if (proc.pid) process.kill(-proc.pid, signal);
   } catch {
     try { proc.kill(signal); } catch {}
   }
 }
+
+const CLAUDE_PATH = resolveClaudePath();
 
 /**
  * AgentSession wraps the Claude CLI for a single conversation.
@@ -228,16 +285,9 @@ ${LANG_RULES_SHORT[lang] || LANG_RULES_SHORT["en"]}
       }
     }
 
-    // Use login shell to get full PATH (critical for Electron/Finder launches)
-    const shellCmd = [CLAUDE_PATH, ...args]
-      .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
-      .join(" ");
-
-    this.proc = spawn("/bin/zsh", ["-lc", shellCmd], {
+    this.proc = spawnWithResolvedEnv(CLAUDE_PATH, args, {
       cwd: this.cwd,
-      env: { ...process.env, ...secretEnv },
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
+      env: secretEnv,
     });
 
     // Log stderr for debugging (but don't expose to user)
@@ -379,7 +429,7 @@ ${LANG_RULES_SHORT[lang] || LANG_RULES_SHORT["en"]}
       ], {
         cwd: this.cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, ...secretEnv },
+        env: buildChildEnv(secretEnv),
       });
 
       let stdout = "";
@@ -538,11 +588,6 @@ export class CliSession {
       const args = cmdMap[this.cli];
       if (!args) return reject(new Error(`Unknown CLI: ${this.cli}`));
 
-      // Use login shell to get full PATH
-      const shellCmd = args
-        .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
-        .join(" ");
-
       // Inject secrets as env vars for the subprocess (skip reserved names)
       const secretEnv: Record<string, string> = {};
       for (const s of store.listSecretsRaw()) {
@@ -551,11 +596,9 @@ export class CliSession {
         }
       }
 
-      this.proc = spawn("/bin/zsh", ["-lc", shellCmd], {
+      this.proc = spawnWithResolvedEnv(args[0], args.slice(1), {
         cwd: this.cwd,
-        env: { ...process.env, ...secretEnv },
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
+        env: secretEnv,
       });
 
       let stdout = "";

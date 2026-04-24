@@ -13,11 +13,12 @@ export function createProjectRouter(deps: { agentRoot: string }): Router {
   const AGENT_ROOT = deps.agentRoot;
 
   router.get("/", (_req, res) => {
+    const agentRoot = store.getSetting("agent_root") || AGENT_ROOT;
     res.json({
-      agent_root: AGENT_ROOT,
-      has_claude_md: fs.existsSync(path.join(AGENT_ROOT, "CLAUDE.md")),
-      has_skills: fs.existsSync(path.join(AGENT_ROOT, ".claude/skills")),
-      has_memory: fs.existsSync(path.join(AGENT_ROOT, "memory")),
+      agent_root: agentRoot,
+      has_claude_md: fs.existsSync(path.join(agentRoot, "CLAUDE.md")),
+      has_skills: fs.existsSync(path.join(agentRoot, ".claude/skills")),
+      has_memory: fs.existsSync(path.join(agentRoot, "memory")),
     });
   });
 
@@ -31,6 +32,11 @@ export function createProjectRouter(deps: { agentRoot: string }): Router {
           `osascript -e 'POSIX path of (choose folder with prompt "Select project directory")'`,
           { encoding: "utf8", timeout: 60000 }
         ).trim().replace(/\/$/, "");
+      } else if (platform === "win32") {
+        selected = execSync(
+          `powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dialog.ShowDialog() -eq 'OK') { $dialog.SelectedPath }"`,
+          { encoding: "utf8", timeout: 60000 }
+        ).trim().replace(/[\\\/]$/, "");
       } else if (platform === "linux") {
         selected = execSync(
           `zenity --file-selection --directory --title="Select project directory" 2>/dev/null`,
@@ -76,6 +82,7 @@ export function createProjectRouter(deps: { agentRoot: string }): Router {
       fs.mkdirSync(path.join(targetDir, "workspace"), { recursive: true });
 
       store.setSetting("agent_root", targetDir);
+      process.env.AGENT_ROOT = targetDir;
       const configDir = path.join(process.env.HOME || "", ".claude-agent");
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(path.join(configDir, "project.path"), targetDir, "utf8");
@@ -90,6 +97,7 @@ export function createProjectRouter(deps: { agentRoot: string }): Router {
     try {
       const agentRoot = store.getSetting("agent_root") || AGENT_ROOT;
       validatePath(agentRoot);
+      process.env.AGENT_ROOT = agentRoot;
       const bundledClaude = path.resolve(__dirname, "../../../.claude");
       const destClaude = path.join(agentRoot, ".claude");
       if (fs.existsSync(bundledClaude)) {
@@ -99,6 +107,10 @@ export function createProjectRouter(deps: { agentRoot: string }): Router {
       const bundledMd = path.resolve(__dirname, "../../../CLAUDE.md");
       if (fs.existsSync(bundledMd)) {
         fs.copyFileSync(bundledMd, path.join(agentRoot, "CLAUDE.md"));
+      }
+      const bundledMcp = path.resolve(__dirname, "../../../.mcp.json");
+      if (fs.existsSync(bundledMcp)) {
+        fs.copyFileSync(bundledMcp, path.join(agentRoot, ".mcp.json"));
       }
       res.json({ success: true, message: "Reset to default configuration" });
     } catch (err) {

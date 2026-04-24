@@ -41,7 +41,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // -------------------------------------------------------------------
 
 export async function generateExperts(topic: string): Promise<Expert[]> {
-  const session = new AgentSession(`expert-gen-${Date.now()}`, AGENT_ROOT);
+  const agentRoot = process.env.AGENT_ROOT || AGENT_ROOT;
+  const session = new AgentSession(`expert-gen-${Date.now()}`, agentRoot);
 
   const lang = store.getSetting("language") || "en";
   const prompt = `Analyze this discussion topic and suggest 3 expert roles.
@@ -125,9 +126,10 @@ async function executeExpert(
   const cli = expert.cli as CliType;
   const fullPrompt = `${expert.systemPrompt}\n\n${prompt}`;
   console.log(`[Discussion] Executing expert: ${expert.name} (${cli})`);
+  const agentRoot = process.env.AGENT_ROOT || AGENT_ROOT;
 
   if (cli === "claude") {
-    const session = new AgentSession(`disc-${Date.now()}`, AGENT_ROOT);
+    const session = new AgentSession(`disc-${Date.now()}`, agentRoot);
     session.sendMessage(fullPrompt);
     let result = "";
     try {
@@ -154,7 +156,7 @@ async function executeExpert(
   }
 
   // Non-Claude CLI
-  const cliSession = new CliSession(cli, AGENT_ROOT);
+  const cliSession = new CliSession(cli, agentRoot);
   try {
     return await cliSession.execute(fullPrompt);
   } catch (err) {
@@ -473,7 +475,8 @@ export async function generateConclusion(
     )
     .join("\n\n");
 
-  const session = new AgentSession(`conclude-${Date.now()}`, AGENT_ROOT);
+  const agentRoot = process.env.AGENT_ROOT || AGENT_ROOT;
+  const session = new AgentSession(`conclude-${Date.now()}`, agentRoot);
   const prompt = `Synthesize the following expert discussion into a clear, actionable conclusion.
 
 Topic: "${project.topic}"
@@ -551,7 +554,7 @@ function saveProjectMarkdown(projectId: string): void {
 
   const messages = store.getDiscussionMessages(projectId);
   const projectSlug = project.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const projectDir = path.join(AGENT_ROOT, "workspace", "projects", projectSlug);
+  const projectDir = path.join(process.env.AGENT_ROOT || AGENT_ROOT, "workspace", "projects", projectSlug);
 
   fs.mkdirSync(projectDir, { recursive: true });
   fs.mkdirSync(path.join(projectDir, "experts"), { recursive: true });

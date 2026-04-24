@@ -95,7 +95,7 @@ export class DiscordBridge {
 
       // Handle attachments (images, files, videos)
       if (message.attachments.size > 0) {
-        const mediaDir = path.join(AGENT_ROOT, "workspace", "media");
+        const mediaDir = path.join(process.env.AGENT_ROOT || AGENT_ROOT, "workspace", "media");
         fs.mkdirSync(mediaDir, { recursive: true });
         for (const [, attachment] of message.attachments) {
           try {
@@ -193,7 +193,7 @@ export class DiscordBridge {
       if (!agentSession) {
         const defaultCli = (this.store.getSetting("default_cli") || "claude") as CliType;
         console.log(`[Discord] Creating session for ${userId} with CLI: ${defaultCli}`);
-        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli, role, chatMemory);
+        agentSession = createSession(sessionId, process.env.AGENT_ROOT || AGENT_ROOT, defaultCli, role, chatMemory);
         this.agentSessions.set(sessionId, agentSession);
       }
 

@@ -25,6 +25,8 @@ Claude-Agent is a ready-to-use [Claude Code](https://docs.anthropic.com/en/docs/
 
 ## Architecture
 
+Modular server architecture inspired by [Claude Code](https://github.com/anthropics/claude-code)'s internal service layer pattern.
+
 ```
 claude-agent/
 ├── .claude/
@@ -33,15 +35,47 @@ claude-agent/
 │   ├── agents/ (4)              researcher, writer, analyst, content-publisher
 │   ├── skills/ (49)             7 categories — see Skills Reference below
 │   └── rules/ (4)               memory, channels, MCP, content quality
-├── app/                         Web UI + Desktop App + Bridges
+├── app/
 │   ├── server/
-│   │   ├── index.ts             Express + WebSocket (port 3456)
-│   │   ├── agent.ts             Claude Code SDK wrapper
-│   │   ├── db.ts                SQLite (sessions, messages, settings, channels, tasks)
-│   │   ├── scheduler.ts         Cron task scheduler (node-cron)
+│   │   ├── index.ts             App assembly + server startup (pure wiring)
+│   │   ├── routes/ (14)         Modular REST API routes by domain
+│   │   │   ├── sessions.ts      Session CRUD
+│   │   │   ├── settings.ts      Language/model/CLI settings
+│   │   │   ├── project.ts       Project directory management
+│   │   │   ├── skills.ts        Skill management (49 skills)
+│   │   │   ├── agents.ts        Agent management
+│   │   │   ├── mcp.ts           MCP server configuration
+│   │   │   ├── channels.ts      Telegram/Discord channel control
+│   │   │   ├── roles.ts         Per-chat role system (14 APIs)
+│   │   │   ├── scheduled-tasks.ts  Cron task scheduling
+│   │   │   ├── secrets.ts       API key management
+│   │   │   ├── discussions.ts   Multi-expert discussion
+│   │   │   ├── memory.ts        Memory file read/write
+│   │   │   ├── history.ts       Cross-session search
+│   │   │   ├── cli.ts           CLI detection + migration
+│   │   │   └── system.ts        Health, export, stats, webhook
+│   │   ├── ws/handler.ts        WebSocket session management
+│   │   ├── agent.ts             AgentSession (Claude CLI wrapper)
+│   │   │   ├── sendMessage()     Injects system context + session summary
+│   │   │   ├── spawnClaude()     Dynamic 5-layer system prompt
+│   │   │   ├── rotate()          Async rotation with compact summary
+│   │   │   └── generateCompactSummary()  9-section summary via haiku
+│   │   ├── stream-handler.ts    Shared streaming (flush/typing/memory strip)
+│   │   ├── memory-extractor.ts  Non-blocking background memory extraction
+│   │   ├── telegram.ts          Telegram bridge (polling + media + commands)
+│   │   ├── discord.ts           Discord bridge (client + attachments)
+│   │   ├── reply-filter.ts      Group reply decision (5 modes)
 │   │   ├── discussion.ts        Multi-expert discussion engine
-│   │   ├── telegram.ts          Built-in Telegram bridge
-│   │   └── discord.ts           Built-in Discord bridge
+│   │   ├── scheduler.ts         Cron task scheduler
+│   │   ├── db.ts                SQLite data layer
+│   │   ├── middleware/
+│   │   │   ├── security.ts      Path validation + name sanitization
+│   │   │   └── rate-limiter.ts  API rate limiting
+│   │   ├── prompts/
+│   │   │   ├── config-bot.ts    Config Bot system prompt
+│   │   │   └── compact.ts       9-section compact summary prompt
+│   │   └── constants/
+│   │       └── languages.ts     Multi-language rules (en/zh-TW/ja)
 │   ├── client/
 │   │   ├── App.tsx              React 18 + Tailwind (12 pages)
 │   │   ├── i18n.ts              Translations (en, zh-TW, ja)
@@ -254,6 +288,19 @@ pm2 start "npm run start" --name claude-agent --cwd app
 └──────────────┘
 ```
 
+### Context Management (Claude Code Patterns)
+
+Session quality features ported from [Claude Code](https://github.com/anthropics/claude-code)'s internal architecture:
+
+| Feature | How It Works |
+|---------|-------------|
+| **Compact Carry-over** | When a session rotates (50 turns), a 9-section summary is generated via haiku and injected into the new session. No context is lost. |
+| **Auto Memory Extraction** | Every 5 turns, a background haiku call extracts structured memories (4 types: user, feedback, project, reference) without blocking the conversation. |
+| **Context Health Warning** | At 40+ turns, the system prompt warns the model to be concise — preventing wasted tokens on repetition. |
+| **Memory Tag Stripping** | `[SAVE_MEMORY]` tags are stripped from streaming output before reaching the user — they're only processed server-side. |
+| **Message Queue** | Per-chat promise chain ensures rapid messages are processed sequentially, preventing race conditions. |
+| **Context Overflow Recovery** | If the CLI reports `prompt_too_long`, the session auto-rotates with summary carry-over instead of crashing. |
+
 ### Task Routing
 
 | Message Pattern | Routed To |
@@ -273,7 +320,20 @@ pm2 start "npm run start" --name claude-agent --cwd app
 
 ### Memory System
 
-Claude-Agent autonomously manages its own memory without being asked:
+Claude-Agent autonomously manages its own memory through two complementary mechanisms:
+
+**Inline Tags** — the model can explicitly output `[SAVE_MEMORY] key: value` during conversation (stripped from user output, processed server-side).
+
+**Background Extraction** — every 5 turns, a haiku-powered background process analyzes recent messages and extracts structured memories in 4 categories:
+
+| Type | What It Captures | Example |
+|------|-----------------|---------|
+| `user` | Role, preferences, knowledge level | "senior engineer, prefers TypeScript" |
+| `feedback` | Corrections, confirmed approaches | "don't mock DB — use integration tests" |
+| `project` | Ongoing work, decisions, deadlines | "auth rewrite due Friday, compliance-driven" |
+| `reference` | External system pointers | "bugs tracked in Linear project INGEST" |
+
+**Memory Files** (auto-managed):
 
 | Event | Memory Action |
 |-------|--------------|
@@ -282,6 +342,7 @@ Claude-Agent autonomously manages its own memory without being asked:
 | New task or reminder | Updates `pending-tasks.md` |
 | Interesting learning | Appends to `learned-today.md` |
 | New contact mentioned | Updates `contacts.md` |
+| Every 5 turns | Background extraction (4-type taxonomy) |
 | Every 30 minutes | `/memory-manager` consolidates & archives |
 | Session end | Hook archives session state |
 

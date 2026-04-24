@@ -14,11 +14,20 @@ export default defineConfig({
     include: ['**/*.test.ts'],
     exclude: ['node_modules', 'dist', 'release'],
     testTimeout: 10000,
+    fileParallelism: false,
+    maxWorkers: 1,
+    minWorkers: 1,
     // Single thread: all test files share one SQLite DB via HOME, so parallel workers cause "database is locked"
     pool: 'forks',
     forkOptions: { singleFork: true },
     env: {
       HOME: testHome,
+    },
+    coverage: {
+      provider: 'custom',
+      customProviderModule: './scripts/vitest-coverage-lite.mjs',
+      reportsDirectory: 'coverage',
+      reporter: ['text', 'json'],
     },
   },
 });

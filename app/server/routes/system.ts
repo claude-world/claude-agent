@@ -9,6 +9,7 @@ import type { TelegramBridge } from "../telegram.ts";
 import type { DiscordBridge } from "../discord.ts";
 import { checkForUpdates, getCachedUpdateInfo } from "../update-checker.ts";
 import { getAutostartStatus, enableAutostart, disableAutostart } from "../autostart.ts";
+import { sanitiseSettings } from "./settings.ts";
 
 export function createSystemRouter(deps: {
   activeSessions: Map<string, ActiveSession>;
@@ -20,9 +21,11 @@ export function createSystemRouter(deps: {
   router.get("/health", (_req, res) => {
     const uptime = process.uptime();
     const mem = process.memoryUsage();
+    const currentVersion = getCachedUpdateInfo().currentVersion;
     res.json({
       status: "ok",
-      version: "1.3.0",
+      app: "claude-agent",
+      version: currentVersion,
       uptime_seconds: Math.floor(uptime),
       memory_mb: Math.floor(mem.rss / 1024 / 1024),
       active_sessions: deps.activeSessions.size,
@@ -35,14 +38,14 @@ export function createSystemRouter(deps: {
 
   router.get("/export", (_req, res) => {
     try {
+      const currentVersion = getCachedUpdateInfo().currentVersion;
       const sessions = store.listAllSessions();
       const allMessages: Record<string, any[]> = {};
       for (const s of sessions) allMessages[s.id] = store.getAllMessages(s.id);
-      const rawSettings = store.getAllSettings();
-      const { webhook_secret, ...safeSettings } = rawSettings;
+      const safeSettings = sanitiseSettings(store.getAllSettings());
       res.setHeader("Content-Disposition", `attachment; filename=claude-agent-backup-${new Date().toISOString().slice(0, 10)}.json`);
       res.json({
-        exported_at: new Date().toISOString(), version: "1.3.0",
+        exported_at: new Date().toISOString(), version: currentVersion,
         sessions, messages: allMessages, settings: safeSettings,
         scheduled_tasks: store.listScheduledTasks(),
         projects: store.listProjects(),
@@ -109,11 +112,10 @@ export function createSystemRouter(deps: {
       if (!checkRateLimit(`webhook:${senderKey}`)) return res.status(429).json({ error: "Rate limit exceeded" });
 
       const webhookSecret = store.getSetting("webhook_secret");
-      if (webhookSecret) {
-        const a = Buffer.from(String(secret || ""));
-        const b = Buffer.from(webhookSecret);
-        if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Invalid webhook secret" });
-      }
+      if (!webhookSecret) return res.status(403).json({ error: "Webhook secret is not configured" });
+      const a = Buffer.from(String(secret || ""));
+      const b = Buffer.from(webhookSecret);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Invalid webhook secret" });
 
       const sessionTitle = `Webhook:${senderKey}`;
       let session = store.findSessionByTitle(sessionTitle);

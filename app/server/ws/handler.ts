@@ -39,6 +39,7 @@ export function createWSHandler(
   allowedOrigins: string[],
 ): WSHandlerResult {
   const activeSessions = new Map<string, ActiveSession>();
+  const getAgentRoot = () => process.env.AGENT_ROOT || agentRoot;
 
   function getOrCreateActive(sessionId: string, cli: CliType = 'claude'): ActiveSession | null {
     if (activeSessions.has(sessionId)) {
@@ -49,7 +50,7 @@ export function createWSHandler(
           ? (existing.agent as AgentSession).interrupt()
           : (existing.agent as CliSession).abort();
         activeSessions.delete(sessionId);
-        const agent = createSession(sessionId, agentRoot, cli);
+        const agent = createSession(sessionId, getAgentRoot(), cli);
         const active: ActiveSession = { agent, subscribers: oldSubscribers, isListening: false, cli };
         activeSessions.set(sessionId, active);
         return active;
@@ -58,7 +59,7 @@ export function createWSHandler(
     }
     const dbSession = store.getSession(sessionId);
     if (!dbSession) return null;
-    const agent = createSession(sessionId, agentRoot, cli);
+    const agent = createSession(sessionId, getAgentRoot(), cli);
     const active: ActiveSession = { agent, subscribers: new Set(), isListening: false, cli };
     activeSessions.set(sessionId, active);
     return active;
@@ -221,6 +222,10 @@ export function createWSHandler(
             if (!active) { ws.send(JSON.stringify({ type: "error", error: "Session not found" })); break; }
             ws.sessionId = msg.sessionId;
             active.subscribers.add(ws);
+            if (active.isListening) {
+              ws.send(JSON.stringify({ type: "error", error: "Session is busy processing a previous message" }));
+              break;
+            }
             const chatContent = msg.configBot ? `${CONFIG_BOT_PROMPT}\n\nUser request: ${msg.content}` : msg.content;
             store.addMessage(msg.sessionId, { role: "user", content: msg.content });
             broadcast(active, { type: "user_message", content: msg.content });

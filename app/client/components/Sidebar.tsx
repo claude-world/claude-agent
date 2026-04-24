@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { Page } from '../types';
 import { t } from '../i18n';
 
@@ -33,6 +34,17 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export default function Sidebar({ activePage, onNavigate, sessionCount }: SidebarProps) {
+  const [version, setVersion] = useState('...');
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((data: { version?: string }) => {
+        if (data.version) setVersion(data.version);
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <aside className="w-56 flex-shrink-0 bg-gray-800 border-r border-gray-700 flex flex-col h-full">
       {/* App title */}
@@ -65,7 +77,7 @@ export default function Sidebar({ activePage, onNavigate, sessionCount }: Sideba
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-gray-700">
-        <p className="text-xs text-gray-600">v1.0.0 · claude-agent</p>
+        <p className="text-xs text-gray-600">v{version} · claude-agent</p>
       </div>
     </aside>
   );

@@ -319,7 +319,7 @@ export default function ChatWindow() {
 
   const sendMessage = useCallback(() => {
     const text = input.trim();
-    if (!text || readyState !== ReadyState.OPEN || (isRunning && !hasResponse) || !activeSessionId) return;
+    if (!text || readyState !== ReadyState.OPEN || isRunning || !activeSessionId) return;
 
     // Optimistic user message
     const userMsg: DisplayMessage = {
@@ -339,7 +339,7 @@ export default function ChatWindow() {
       content: text,
       cli: selectedCli
     });
-  }, [input, readyState, isRunning, hasResponse, activeSessionId, sendJsonMessage]);
+  }, [input, readyState, isRunning, activeSessionId, selectedCli, sendJsonMessage]);
 
   const interruptSession = useCallback(() => {
     if (!activeSessionId) return;
@@ -525,11 +525,11 @@ export default function ChatWindow() {
               el.style.height = 'auto';
               el.style.height = Math.min(el.scrollHeight, 128) + 'px';
             }}
-            disabled={(isRunning && !hasResponse) || readyState !== ReadyState.OPEN || !activeSessionId}
+            disabled={isRunning || readyState !== ReadyState.OPEN || !activeSessionId}
           />
           <button
             onClick={sendMessage}
-            disabled={!input.trim() || (isRunning && !hasResponse) || readyState !== ReadyState.OPEN || !activeSessionId}
+            disabled={!input.trim() || isRunning || readyState !== ReadyState.OPEN || !activeSessionId}
             className="btn-primary h-10 px-4 flex-shrink-0"
           >
             Send

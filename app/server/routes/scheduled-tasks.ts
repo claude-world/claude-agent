@@ -3,6 +3,17 @@ import { validate as validateCron } from "node-cron";
 import store from "../db.ts";
 import scheduler from "../scheduler.ts";
 
+function isValidTimezone(timezone: unknown): boolean {
+  if (timezone === undefined || timezone === null) return true;
+  if (typeof timezone !== "string" || !timezone.trim()) return false;
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createScheduledTasksRouter(): Router {
   const router = Router();
 
@@ -23,6 +34,9 @@ export function createScheduledTasksRouter(): Router {
       if (!validateCron(schedule)) {
         return res.status(400).json({ error: "Invalid cron expression" });
       }
+      if (!isValidTimezone(timezone)) {
+        return res.status(400).json({ error: "Invalid timezone. Use IANA format (e.g. Asia/Taipei)" });
+      }
       const task = store.createScheduledTask({ name, prompt, agent, schedule, timezone });
       if (task.enabled) scheduler.registerJob(task.id);
       res.status(201).json(task);
@@ -33,9 +47,12 @@ export function createScheduledTasksRouter(): Router {
 
   router.put("/:id", (req, res) => {
     try {
-      const { schedule } = req.body ?? {};
+      const { schedule, timezone } = req.body ?? {};
       if (schedule && !validateCron(schedule)) {
         return res.status(400).json({ error: "Invalid cron expression" });
+      }
+      if (timezone !== undefined && !isValidTimezone(timezone)) {
+        return res.status(400).json({ error: "Invalid timezone. Use IANA format (e.g. Asia/Taipei)" });
       }
       const task = store.updateScheduledTask(req.params.id, req.body ?? {});
       if (!task) return res.status(404).json({ error: "Task not found" });
@@ -86,6 +103,15 @@ export function createScheduledTasksRouter(): Router {
         console.error(`[Scheduler] Manual trigger error for ${req.params.id}:`, err);
       });
       res.json({ success: true, message: "Task execution started" });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.get("/executions", (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      res.json(store.listTaskExecutions(undefined, limit));
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

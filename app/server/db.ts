@@ -680,6 +680,7 @@ const stmts = {
   listRootLineages: db.prepare(
     `SELECT * FROM agent_lineages WHERE parent_id IS NULL ORDER BY created_at DESC`
   ),
+  deleteLineage: db.prepare(`DELETE FROM agent_lineages WHERE id = ?`),
   // Goal entries
   insertGoal: db.prepare(
     `INSERT INTO goal_entries (id, title, description, priority, milestones, tags)
@@ -1446,6 +1447,18 @@ export const store = {
 
   listRootLineages(): AgentLineage[] {
     return stmts.listRootLineages.all() as AgentLineage[];
+  },
+
+  deleteLineage(id: string): boolean {
+    const existing = stmts.getLineage.get(id) as AgentLineage | undefined;
+    if (!existing) return false;
+    const deleteSubtree = (lineageId: string) => {
+      const children = stmts.listLineageChildren.all(lineageId) as AgentLineage[];
+      for (const child of children) deleteSubtree(child.id);
+      stmts.deleteLineage.run(lineageId);
+    };
+    deleteSubtree(id);
+    return true;
   },
 
   // Goals

@@ -1,13 +1,16 @@
 import { Router } from "express";
 import path from "path";
 import fs from "fs";
+import store from "../db.ts";
 
 export function createMemoryRouter(deps: { agentRoot: string }): Router {
   const router = Router();
-  const MEMORY_DIR = path.join(deps.agentRoot, "memory");
+  const getMemoryDir = () =>
+    path.join(store.getSetting("agent_root") || process.env.AGENT_ROOT || deps.agentRoot, "memory");
 
   router.get("/", (_req, res) => {
     try {
+      const MEMORY_DIR = getMemoryDir();
       if (!fs.existsSync(MEMORY_DIR)) return res.json([]);
       const files = fs
         .readdirSync(MEMORY_DIR, { withFileTypes: true })
@@ -21,6 +24,7 @@ export function createMemoryRouter(deps: { agentRoot: string }): Router {
 
   router.get("/:filename", (req, res) => {
     try {
+      const MEMORY_DIR = getMemoryDir();
       const filename = path.basename(req.params.filename);
       const filePath = path.join(MEMORY_DIR, filename);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File not found" });
@@ -33,6 +37,7 @@ export function createMemoryRouter(deps: { agentRoot: string }): Router {
 
   router.put("/:filename", (req, res) => {
     try {
+      const MEMORY_DIR = getMemoryDir();
       const filename = path.basename(req.params.filename);
       if (!filename.endsWith(".md")) return res.status(400).json({ error: "Only .md files are allowed" });
       const filePath = path.join(MEMORY_DIR, filename);

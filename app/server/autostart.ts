@@ -11,7 +11,7 @@
  *                                         { enabled: false } → disableAutostart()
  */
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -37,22 +37,47 @@ const SYSTEMD_PATH = path.join(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Locate the tsx executable: project-local → login-shell PATH → fallback. */
-function findTsx(): string {
-  const ext = PLATFORM === "win32" ? ".cmd" : "";
-  const local = path.join(APP_DIR, "node_modules", ".bin", `tsx${ext}`);
+/** Locate the tsx entry script: project-local → PATH lookup → fallback. */
+function findTsxScript(): string {
+  const local = path.join(APP_DIR, "node_modules", "tsx", "dist", "cli.mjs");
   if (fs.existsSync(local)) return local;
+  const locator = PLATFORM === "win32" ? "where" : "which";
   try {
-    return execSync("/bin/zsh -lc 'which tsx'", { encoding: "utf8", timeout: 5000 }).trim();
+    return execFileSync(locator, ["tsx"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim().split(/\r?\n/)[0];
   } catch {
-    return `tsx${ext}`;
+    return "tsx";
   }
+}
+
+function findNodeLauncher(): { launcher: string; electronRunAsNode: boolean } {
+  if (process.versions.electron || process.env.ELECTRON_RUN_AS_NODE === "1") {
+    return { launcher: process.execPath, electronRunAsNode: true };
+  }
+
+  const locator = PLATFORM === "win32" ? "where" : "which";
+  try {
+    const nodePath = execFileSync(locator, ["node"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim().split(/\r?\n/)[0];
+    if (nodePath) {
+      return { launcher: nodePath, electronRunAsNode: false };
+    }
+  } catch {}
+
+  return { launcher: process.execPath, electronRunAsNode: true };
 }
 
 // ── Service file generators ───────────────────────────────────────────────────
 
 function macPlistContent(): string {
-  const tsx = findTsx();
+  const { launcher, electronRunAsNode } = findNodeLauncher();
+  const tsx = findTsxScript();
   const serverEntry = path.join(APP_DIR, "server", "index.ts");
   const agentRoot = process.env.AGENT_ROOT || path.resolve(APP_DIR, "..");
   // Cover Homebrew + npm global installs
@@ -66,6 +91,7 @@ function macPlistContent(): string {
   <string>com.claude-world.agent</string>
   <key>ProgramArguments</key>
   <array>
+    <string>${launcher}</string>
     <string>${tsx}</string>
     <string>${serverEntry}</string>
   </array>
@@ -87,13 +113,15 @@ function macPlistContent(): string {
     <string>${HOME}</string>
     <key>PATH</key>
     <string>${envPath}</string>
+    ${electronRunAsNode ? "<key>ELECTRON_RUN_AS_NODE</key>\n    <string>1</string>" : ""}
   </dict>
 </dict>
 </plist>`;
 }
 
 function systemdContent(): string {
-  const tsx = findTsx();
+  const { launcher, electronRunAsNode } = findNodeLauncher();
+  const tsx = findTsxScript();
   const serverEntry = path.join(APP_DIR, "server", "index.ts");
   const agentRoot = process.env.AGENT_ROOT || path.resolve(APP_DIR, "..");
 
@@ -104,12 +132,12 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${APP_DIR}
-ExecStart=${tsx} ${serverEntry}
+ExecStart=${launcher} ${tsx} ${serverEntry}
 Restart=on-failure
 RestartSec=5
 Environment=AGENT_ROOT=${agentRoot}
 Environment=HOME=${HOME}
-StandardOutput=append:${path.join(LOG_DIR, "server.log")}
+${electronRunAsNode ? "Environment=ELECTRON_RUN_AS_NODE=1\n" : ""}StandardOutput=append:${path.join(LOG_DIR, "server.log")}
 StandardError=append:${path.join(LOG_DIR, "server-error.log")}
 
 [Install]
@@ -193,10 +221,12 @@ export function enableAutostart(): AutostartStatus {
 
   if (PLATFORM === "win32") {
     try {
-      const tsx = findTsx();
+      const { launcher, electronRunAsNode } = findNodeLauncher();
+      const tsx = findTsxScript();
       const serverEntry = path.join(APP_DIR, "server", "index.ts");
       // Quote the full command string for the registry value
-      const cmd = `"${tsx}" "${serverEntry}"`;
+      const prefix = electronRunAsNode ? "set ELECTRON_RUN_AS_NODE=1 && " : "";
+      const cmd = `cmd /c "${prefix}\\"${launcher}\\" \\"${tsx}\\" \\"${serverEntry}\\""`;
       execSync(
         `reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "ClaudeAgent" /t REG_SZ /d "${cmd}" /f`,
         { stdio: "pipe" }

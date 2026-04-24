@@ -373,11 +373,12 @@ export default function ScheduledTasksPage() {
   const handleToggle = async (id: string, enabled: boolean) => {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, enabled } : t)));
     try {
-      await fetch(`/api/scheduled-tasks/${id}`, {
+      const res = await fetch(`/api/scheduled-tasks/${id}/toggle`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch {
       setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, enabled: !enabled } : t)));
     }

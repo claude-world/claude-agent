@@ -141,7 +141,7 @@ export class TelegramBridge {
 
         let configSession = this.agentSessions.get(configSessionId);
         if (!configSession) {
-          configSession = createSession(configSessionId, AGENT_ROOT, 'claude');
+          configSession = createSession(configSessionId, process.env.AGENT_ROOT || AGENT_ROOT, 'claude');
           this.agentSessions.set(configSessionId, configSession);
         }
 
@@ -248,7 +248,7 @@ export class TelegramBridge {
       if (!agentSession) {
         const defaultCli = (this.store.getSetting("default_cli") || "claude") as CliType;
         console.log(`[Telegram] Creating session for chat ${chatId} with CLI: ${defaultCli}`);
-        agentSession = createSession(sessionId, AGENT_ROOT, defaultCli, role, chatMemory);
+        agentSession = createSession(sessionId, process.env.AGENT_ROOT || AGENT_ROOT, defaultCli, role, chatMemory);
         this.agentSessions.set(sessionId, agentSession);
       }
 
@@ -373,7 +373,7 @@ export class TelegramBridge {
   private async handleMedia(msg: TelegramBot.Message): Promise<string> {
     if (!this.bot) return "";
 
-    const mediaDir = path.join(AGENT_ROOT, "workspace", "media");
+    const mediaDir = path.join(process.env.AGENT_ROOT || AGENT_ROOT, "workspace", "media");
     fs.mkdirSync(mediaDir, { recursive: true });
 
     const parts: string[] = [];
