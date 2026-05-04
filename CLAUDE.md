@@ -80,6 +80,7 @@ Route messages to the appropriate handler:
 |---------|--------|
 | Quick factual question | Answer directly |
 | "Research..." / "Find out about..." | → `/quick-research` skill |
+| "Search Exa for..." / "Find papers on..." / "Find companies that..." | → `/exa-search` skill |
 | "Remind me..." / "Add task..." | → `/task-tracker` skill |
 | "Summarize..." / shared URL | → `/summarize` skill |
 | "Draft an email..." / "Write a message..." | → `/draft-message` skill |
@@ -146,11 +147,11 @@ memory/
 
 ---
 
-## Skills Available (49 total)
+## Skills Available (50 total)
 
 **Core:** `/memory-manager` `/task-tracker` `/daily-briefing` `/context-health` `/brainstorm` `/draft-message` `/quick-research` `/summarize` `/skill-creator`
 
-**Content:** `/trend-scout` `/content-creator` `/podcast-maker` `/deep-read` `/image-gen` `/rss-monitor`
+**Content:** `/exa-search` `/trend-scout` `/content-creator` `/podcast-maker` `/deep-read` `/image-gen` `/rss-monitor`
 
 **Productivity:** `/email` `/google-workspace` `/github-ops` `/gh-issues` `/notion` `/obsidian` `/trello` `/things-mac` `/pdf-editor` `/bear-notes` `/apple-notes` `/apple-reminders`
 
