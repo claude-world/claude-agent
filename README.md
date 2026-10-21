@@ -459,14 +459,14 @@ No setup needed — these work out of the box.
 free web search and page fetching without an account or API key. Anonymous search
 uses Fast mode and is intended for exploration and light use, with rate limits.
 Use this with **Method 1: CLI** to gather current sources for a comparison or read
-pages before writing a summary.
+pages before writing a summary. Search queries and the URLs it fetches go to
+Parallel, a third-party service, instead of through Claude Code's built-in web tools.
 
 From the `claude-agent` project directory, add it to your personal configuration
 for this project:
 
 ```bash
-claude mcp add --transport http --scope local parallel-search https://search.parallel.ai/mcp \
-  --header "User-Agent: claude-agent/2.1.0"
+claude mcp add --transport http --scope local parallel-search https://search.parallel.ai/mcp
 claude mcp get parallel-search
 ```
 
