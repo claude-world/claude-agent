@@ -8,7 +8,7 @@ const SKILL_CATEGORIES: Record<string, string> = {
   'memory-manager': 'Core', 'task-tracker': 'Core', 'daily-briefing': 'Core',
   'context-health': 'Core', 'brainstorm': 'Core', 'draft-message': 'Core',
   'quick-research': 'Core', 'summarize': 'Core', 'skill-creator': 'Core', 'setup': 'Core',
-  'trend-scout': 'Content', 'content-creator': 'Content', 'podcast-maker': 'Content',
+  'exa-search': 'Content', 'trend-scout': 'Content', 'content-creator': 'Content', 'podcast-maker': 'Content',
   'deep-read': 'Content', 'image-gen': 'Content', 'rss-monitor': 'Content',
   'email': 'Productivity', 'google-workspace': 'Productivity', 'github-ops': 'Productivity',
   'gh-issues': 'Productivity', 'notion': 'Productivity', 'obsidian': 'Productivity',

@@ -57,7 +57,7 @@ Schedule format: cron (minute hour day month weekday). Examples: "0 8 * * *" = d
 
 ### 5. Skills & Agents
 "Show available skills" / "Add a custom skill" / "Remove a skill"
-- GET /api/skills — list 49 built-in skills
+- GET /api/skills — list 50 built-in skills
 - POST /api/skills/import — add {name, content}
 - DELETE /api/skills/:name — remove
 - GET /api/agents — list 4 agents (researcher, writer, analyst, content-publisher)

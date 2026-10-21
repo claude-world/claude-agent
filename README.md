@@ -13,7 +13,7 @@ Claude-Agent is a ready-to-use [Claude Code](https://docs.anthropic.com/en/docs/
 
 | Category | What |
 |----------|------|
-| **49 Skills** | Productivity, smart home, media, messaging, security — full [OpenClaw](https://github.com/openclaw/openclaw) feature parity |
+| **50 Skills** | Productivity, smart home, media, messaging, security — full [OpenClaw](https://github.com/openclaw/openclaw) feature parity |
 | **4 Use Methods** | CLI, Web UI (localhost:3456), Desktop App (.dmg/.exe), Telegram/Discord |
 | **12-Page Control Panel** | Chat, History, Projects, Skills, Agents, Memory, MCP, Secrets, Schedule, Config Bot, Settings, Channels |
 | **Scheduled Tasks** | Cron-based agent scheduling with execution history and manual trigger |
@@ -38,7 +38,7 @@ claude-agent/
 │   ├── settings.json            Hook configuration + env vars
 │   ├── hooks/ (4)               Session lifecycle (Node.js)
 │   ├── agents/ (4)              researcher, writer, analyst, content-publisher
-│   ├── skills/ (49)             7 categories — see Skills Reference below
+│   ├── skills/ (50)             7 categories — see Skills Reference below
 │   └── rules/ (4)               memory, channels, MCP, content quality
 ├── app/
 │   ├── server/
@@ -47,7 +47,7 @@ claude-agent/
 │   │   │   ├── sessions.ts      Session CRUD
 │   │   │   ├── settings.ts      Language/model/CLI settings
 │   │   │   ├── project.ts       Project directory management
-│   │   │   ├── skills.ts        Skill management (49 skills)
+│   │   │   ├── skills.ts        Skill management (50 skills)
 │   │   │   ├── agents.ts        Agent management
 │   │   │   ├── mcp.ts           MCP server configuration
 │   │   │   ├── channels.ts      Telegram/Discord channel control
@@ -158,7 +158,7 @@ Open **http://localhost:3456** in your browser.
 | **💬 Chat** | Talk to your agent with streaming responses and tool call visualization |
 | **📋 History** | Browse all session messages, search across conversations, view tool calls |
 | **🏛️ Projects** | Multi-expert collaborative discussion with cross-CLI debate |
-| **⚡ Skills** | Browse 49 skills, search, import/export, create new skills with AI |
+| **⚡ Skills** | Browse 50 skills, search, import/export, create new skills with AI |
 | **🤖 Agents** | Manage 4 agents, import/export, create new agents with AI |
 | **🧠 Memory** | View and edit your agent's memory files |
 | **🔌 MCP** | Add/remove MCP servers, view tool counts and tier status |
@@ -220,7 +220,7 @@ Your agent is ready. Here's what you can do:
 "Remind me at 3pm to..."   → Task with cron reminder
 ```
 
-All 49 skills respond to natural language. No need to memorize commands.
+All 50 skills respond to natural language. No need to memorize commands.
 
 ### Method 4: Desktop App (macOS / Windows / Linux)
 
@@ -351,7 +351,7 @@ Claude-Agent autonomously manages its own memory through two complementary mecha
 | Every 30 minutes | `/memory-manager` consolidates & archives |
 | Session end | Hook archives session state |
 
-## Skills Reference (49 skills)
+## Skills Reference (50 skills)
 
 ### Core Assistant
 | Command | Model | Description |
@@ -365,10 +365,12 @@ Claude-Agent autonomously manages its own memory through two complementary mecha
 | `/brainstorm` | sonnet | Structured ideation with multiple perspectives |
 | `/context-health` | haiku | Monitor context window and memory status |
 | `/skill-creator` | sonnet | Create new skills from descriptions |
+| `/setup` | sonnet | First-time onboarding: environment checks, profile, routines |
 
 ### Content & Research
 | Command | Model | Description |
 |---------|-------|-------------|
+| `/exa-search` | haiku | AI-powered web/news/paper search via Exa API (semantic, domain-filtered) |
 | `/trend-scout` | haiku | Trending topics from 20 free sources |
 | `/content-creator` | sonnet | Patent-scored social content + image cards |
 | `/podcast-maker` | sonnet | AI podcast + video via NotebookLM |
