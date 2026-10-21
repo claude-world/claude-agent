@@ -460,6 +460,49 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 No setup needed — these work out of the box.
 
+### Optional: Parallel web search in Claude Code
+
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) adds
+free web search and page fetching without an account or API key. Anonymous search
+uses Fast mode and is intended for exploration and light use, with rate limits.
+Use this with **Method 1: CLI** to gather current sources for a comparison or read
+pages before writing a summary. Search queries and the URLs it fetches go to
+Parallel, a third-party service, instead of through Claude Code's built-in web tools.
+
+From the `claude-agent` project directory, add it to your personal configuration
+for this project:
+
+```bash
+claude mcp add --transport http --scope local parallel-search https://search.parallel.ai/mcp
+claude mcp get parallel-search
+```
+
+Claude Code's [local scope](https://code.claude.com/docs/en/mcp#local-scope) stores
+this entry under the project path in `~/.claude.json`. It leaves the four bundled
+servers in `.mcp.json` intact. If `parallel-search` already exists, inspect it with
+`claude mcp get parallel-search` before changing your configuration.
+
+Start or restart `claude` in the same directory and open `/mcp`. Confirm that
+`parallel-search` is connected and exposes `web_search` and `web_fetch`. In the
+main conversation, try:
+
+> Stay in the main conversation for this request. Use parallel-search's
+> web_search to find the official Node.js release schedule, then web_fetch to
+> read the source page. Summarize the supported LTS releases and cite the URLs.
+
+The bundled `/quick-research` skill and `researcher` agent allow only built-in
+web tools; adding this server does not change their tool lists. Ask for Parallel's
+tools directly as above. If the connection fails or a request is rate limited,
+use the existing WebSearch/WebFetch path or retry later. `web_fetch` retrieves
+page content; keep using `cf-browser` for browser interactions and screenshots.
+
+To remove this optional setup, run from the same project directory, then restart
+Claude Code:
+
+```bash
+claude mcp remove parallel-search --scope local
+```
+
 ### Tier 2: Credential-Required (Optional)
 
 | Server | Tools | Setup | Capabilities |
