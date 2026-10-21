@@ -48,6 +48,13 @@ Dependency, security, and toolchain refresh.
   local publish could include hundreds of MB of stale `dist`/`release` output).
 - Stopped tracking and shipping stale runtime session archives under `app/memory/`.
 
+### Fixed
+
+- `AgentSession` now handles the child-process `'error'` event when spawning the
+  `claude` CLI. A missing or unspawnable CLI (e.g. Claude Code not installed or not on
+  `PATH`) previously surfaced as an uncaught exception; it is now logged with a clear
+  message and the response stream ends cleanly.
+
 ### Package Upgrades
 
 | Package | From | To |

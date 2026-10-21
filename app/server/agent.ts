@@ -297,6 +297,13 @@ ${LANG_RULES_SHORT[lang] || LANG_RULES_SHORT["en"]}
         console.error(`[AgentSession ${this.sessionId}] stderr: ${msg.slice(0, 200)}`);
       }
     });
+
+    // A missing or unspawnable CLI (e.g. ENOENT when Claude Code is not installed)
+    // is reported via 'error'; without a listener it becomes an uncaught exception.
+    // stdout still ends, so the output stream finishes with an empty response.
+    this.proc.on("error", (err) => {
+      console.error(`[AgentSession ${this.sessionId}] Failed to start claude CLI (${CLAUDE_PATH}): ${err.message}`);
+    });
   }
 
   /**
