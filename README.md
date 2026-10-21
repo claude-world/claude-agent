@@ -360,6 +360,7 @@ Claude-Agent autonomously manages its own memory through two complementary mecha
 | `/brainstorm` | sonnet | Structured ideation with multiple perspectives |
 | `/context-health` | haiku | Monitor context window and memory status |
 | `/skill-creator` | sonnet | Create new skills from descriptions |
+| `/setup` | sonnet | First-time onboarding: environment checks, profile, routines |
 
 ### Content & Research
 | Command | Model | Description |

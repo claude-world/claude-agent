@@ -149,7 +149,7 @@ memory/
 
 ## Skills Available (50 total)
 
-**Core:** `/memory-manager` `/task-tracker` `/daily-briefing` `/context-health` `/brainstorm` `/draft-message` `/quick-research` `/summarize` `/skill-creator`
+**Core:** `/memory-manager` `/task-tracker` `/daily-briefing` `/context-health` `/brainstorm` `/draft-message` `/quick-research` `/summarize` `/skill-creator` `/setup`
 
 **Content:** `/exa-search` `/trend-scout` `/content-creator` `/podcast-maker` `/deep-read` `/image-gen` `/rss-monitor`
 
