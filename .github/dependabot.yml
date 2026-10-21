@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # App dependencies (the publishable package lives in app/)
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 10
+    groups:
+      # Collapse routine minor+patch bumps into a single PR to cut noise.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by the workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch

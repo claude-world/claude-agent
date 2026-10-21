@@ -19,6 +19,7 @@ app/dist/
 app/data/
 app/release/
 app/coverage/
+app/memory/
 data/
 
 # Local browser automation artifacts

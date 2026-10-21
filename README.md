@@ -1,5 +1,10 @@
 # Claude-Agent
 
+[![CI](https://github.com/claude-world/claude-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/claude-world/claude-agent/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/claude-agent-app)](https://www.npmjs.com/package/claude-agent-app)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > Turn Claude Code into a persistent personal assistant with autonomous memory, multi-channel support, and intelligent task delegation.
 
 Claude-Agent is a ready-to-use [Claude Code](https://docs.anthropic.com/en/docs/claude-code) project that transforms Claude into a long-running personal assistant. It receives messages from multiple channels (Telegram, Discord, webhooks, terminal), remembers context across sessions, and delegates complex tasks to specialist agents — all within Claude Code's native architecture.
@@ -77,7 +82,7 @@ claude-agent/
 │   │   └── constants/
 │   │       └── languages.ts     Multi-language rules (en/zh-TW/ja)
 │   ├── client/
-│   │   ├── App.tsx              React 18 + Tailwind (12 pages)
+│   │   ├── App.tsx              React 19 + Tailwind (12 pages)
 │   │   ├── i18n.ts              Translations (en, zh-TW, ja)
 │   │   └── components/ (12)     Chat, History, Projects, Skills, Agents, Memory, MCP, Secrets, Tasks, Config Bot, Settings, Channels
 │   ├── electron/main.cjs        Desktop app entry point
@@ -99,7 +104,7 @@ cd claude-agent
 
 ### Prerequisites
 
-- **Node.js** >= 18
+- **Node.js** >= 22 — required by the Web UI / Desktop app (the lifecycle hooks themselves use only built-in modules and run on any recent Node)
 - **Claude Code CLI** — for Method 1 & 3. [Install here](https://docs.anthropic.com/en/docs/claude-code)
 
 ### Three Ways to Use
@@ -643,9 +648,9 @@ Runtime files (`memory/archive/`, `workspace/`, `memory/learned-today.md`, `memo
 ## Requirements
 
 - **Claude Code CLI** — Latest version recommended
-- **Node.js** >= 18 — For hooks (uses only built-in `fs` and `path` modules)
+- **Node.js** >= 22 — For the Web UI and Desktop app (the lifecycle hooks use only built-in `fs` and `path` modules and run on any recent Node)
 - **uv** (optional) — For MCP servers. Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- No additional npm dependencies
+- CLI + hooks need no extra npm packages; the Web UI / Desktop app installs its dependencies via `cd app && npm install`
 
 ## License
 

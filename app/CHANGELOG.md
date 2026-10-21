@@ -1,5 +1,82 @@
 # Changelog
 
+## [2.2.0] - 2026-10-21
+
+Dependency, security, and toolchain refresh.
+
+### Breaking Changes
+
+- **Node.js >= 22 required.** Several dependencies (`@lancedb/lancedb`, `better-sqlite3`,
+  `openai`, `electron`, `concurrently`) dropped Node 20, which is now end-of-life. An
+  `engines.node >= 22` floor is declared. The Claude Code CLI usage and the lifecycle
+  hooks (built-in modules only) are unaffected.
+- **Telegram library rewrite**: `node-telegram-bot-api` upgraded `0.67` → `2.x`, a full
+  API redesign. The Telegram bridge was migrated to the new `Bot` / `api` / `Context`
+  interface (`bot.api.sendMessage({ chat_id, text })`, `bot.startPolling()`, `bot.catch()`).
+  User-facing behavior is unchanged.
+- **Embeddings backend**: replaced the deprecated `@xenova/transformers` with its
+  maintained successor `@huggingface/transformers` (v4). Local semantic search is
+  unchanged; the TF-IDF fallback still applies when the model is unavailable.
+
+### Security
+
+- npm audit findings reduced **53 → 12** (from 7 critical / 27 high to **0 critical**,
+  4 high, 8 moderate). Clearing the old Telegram HTTP stack removed the `request`,
+  `form-data`, `tough-cookie`, `qs`, and `uuid` advisories; lockfile refresh resolved
+  `shell-quote`, `tar`, `proxy-addr`, `undici`, `ws`, and `vite`.
+- Remaining advisories are dev/build-time only (the `electron-builder` chain, used to
+  package installers) or upstream libvips issues in `sharp` with no fixed release; none
+  are reachable from the shipped server runtime.
+
+### Model Currency
+
+- Default direct-SDK model updated `claude-sonnet-4-6` → `claude-sonnet-5-5`. UI and
+  doc model references refreshed to current IDs.
+
+### Added
+
+- **CI**: GitHub Actions workflow running install, typecheck, test, and build on Node
+  22, 24, and 26.
+- **Dependabot**: `.github/dependabot.yml` for npm (`/app`) and github-actions, monthly,
+  with minor+patch updates grouped to reduce PR noise.
+- `npm run typecheck` script (`tsc --noEmit`).
+
+### Packaging
+
+- Added a `files` allowlist and `build.emptyOutDir` so `npm publish` ships a
+  deterministic ~370 kB tarball regardless of local build/runtime state (previously a
+  local publish could include hundreds of MB of stale `dist`/`release` output).
+- Stopped tracking and shipping stale runtime session archives under `app/memory/`.
+
+### Fixed
+
+- `AgentSession` now handles the child-process `'error'` event when spawning the
+  `claude` CLI. A missing or unspawnable CLI (e.g. Claude Code not installed or not on
+  `PATH`) previously surfaced as an uncaught exception; it is now logged with a clear
+  message and the response stream ends cleanly.
+
+### Package Upgrades
+
+| Package | From | To |
+|---------|------|----|
+| @anthropic-ai/sdk | 0.88 | 0.137 |
+| node-telegram-bot-api | 0.67 | 2.1 |
+| openai | 6 | 7 |
+| @lancedb/lancedb | 0.27 | 0.40 |
+| better-sqlite3 | 12 | 13 |
+| electron | 41 | 44 |
+| electron-builder | 26.0 | 26.15 |
+| discord.js | 14.18 | 14.27 |
+| express | 5.1 | 5.3 |
+| ws | 8.18 | 8.22 |
+| node-cron | 4.2 | 4.6 |
+| concurrently | 9 | 10 |
+| vite | 8.0 | 8.3 |
+| vitest | 4.0 | 4.1 |
+| tailwindcss / @tailwindcss/vite | 4.2 | 4.3 |
+| @vitejs/plugin-react | 6.0 | 6.1 |
+| @xenova/transformers | 2.17 | → @huggingface/transformers 4.3 |
+
 ## [1.3.0] - 2026-03-28
 
 ### Breaking Changes

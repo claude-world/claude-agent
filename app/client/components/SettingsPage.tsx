@@ -11,7 +11,7 @@ const LANGUAGES: { value: Language; label: string }[] = [
 const MODELS: { value: ModelDefault; label: string; description: string }[] = [
   { value: 'haiku', label: 'Haiku', description: 'Fast & cheap — simple tasks' },
   { value: 'sonnet', label: 'Sonnet', description: 'Balanced — complex coding (default)' },
-  { value: 'opus', label: 'Opus', description: 'Best quality — critical tasks (1M context)' }
+  { value: 'opus', label: 'Opus', description: 'Most capable — critical tasks' }
 ];
 
 const TOOL_COUNTS: Record<string, number> = {

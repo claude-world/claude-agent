@@ -31,7 +31,7 @@ export interface ExecutorConfig {
   type: ExecutorType;
   sessionId: string;
   cwd?: string;
-  model?: string;           // model override (e.g. "gpt-4o", "claude-sonnet-4-5")
+  model?: string;           // model override (e.g. "gpt-4o", "claude-sonnet-5-5")
   apiKey?: string;          // if not provided, falls back to env var or stored secrets
   baseURL?: string;         // for Ollama or custom OpenAI-compatible endpoints
   systemPrompt?: string;    // custom system prompt
