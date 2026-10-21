@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Dev tooling: `typescript` 6 → 7 (native compiler), `vitest` 4 → 5,
+  `@types/better-sqlite3` 7 → 9; `react`/`react-dom` 19.3, `@types/ws` 8.18.2.
+- CI and publish workflows skip `onnxruntime-node`'s optional CUDA download
+  (`ONNXRUNTIME_NODE_INSTALL=skip`); the CPU binaries ship in the package.
+- Dependabot ignores `apache-arrow` > 18.1.0, matching `@lancedb/lancedb`'s peer range.
+
 ## [2.2.0] - 2026-10-21
 
 Dependency, security, and toolchain refresh.

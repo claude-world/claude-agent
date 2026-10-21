@@ -25,6 +25,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # CPU binaries ship in the package; skip the optional CUDA download
+          # (a large network fetch on linux/x64 that can time out).
+          ONNXRUNTIME_NODE_INSTALL: skip
 
       - name: Build
         run: npm run build
