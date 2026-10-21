@@ -5,7 +5,9 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [tailwindcss(), react()],
   root: 'client',
-  build: { outDir: '../dist/client' },
+  // outDir is outside `root`, so Vite will not empty it by default; force a clean
+  // build so stale hashed bundles don't accumulate (and never reach `npm publish`).
+  build: { outDir: '../dist/client', emptyOutDir: true },
   optimizeDeps: {
     include: ['react-use-websocket', 'react-markdown', 'remark-gfm']
   },

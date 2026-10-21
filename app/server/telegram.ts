@@ -1,4 +1,5 @@
-import TelegramBot from "node-telegram-bot-api";
+import { Bot } from "node-telegram-bot-api";
+import type { Message } from "node-telegram-bot-api";
 import { AgentSession, CliSession, createSession, CONFIG_BOT_PROMPT, type CliType } from "./agent.ts";
 import type { store as StoreType, Role } from "./db.ts";
 import { shouldReply } from "./reply-filter.ts";
@@ -18,7 +19,8 @@ const MAX_MSG_LEN = 4000;
  * keyed by chat_id. Sessions survive across messages in the same run.
  */
 export class TelegramBridge {
-  private bot: TelegramBot | null = null;
+  private bot: Bot | null = null;
+  private token = "";
   private store: typeof StoreType;
   // Map: chatId (string) → sessionId (string)
   private chatToSession = new Map<string, string>();
@@ -44,18 +46,21 @@ export class TelegramBridge {
       return;
     }
 
-    this.bot = new TelegramBot(token, { polling: true });
+    this.bot = new Bot(token);
+    this.token = token;
 
     // Cache bot info for mention detection
     let botUsername = "";
     let botId = 0;
-    this.bot.getMe().then((me) => {
+    this.bot.api.getMe().then((me) => {
       botUsername = me.username || "";
       botId = me.id;
       console.log(`[Telegram] Bot info: @${botUsername} (id: ${botId})`);
     }).catch(() => {});
 
-    this.bot.on("message", async (msg) => {
+    this.bot.on("message", async (ctx) => {
+      const msg = ctx.message;
+      if (!msg) return;
       const chatId = String(msg.chat.id);
 
       // Handle media messages (photo, document, video, audio, voice)
@@ -136,7 +141,7 @@ export class TelegramBridge {
         }
         const configSessionId = await this.getOrCreateConfigSession(chatId);
         try {
-          await this.bot!.sendChatAction(chatId, "typing");
+          await this.bot!.api.sendChatAction({ chat_id: chatId, action: "typing" });
         } catch {}
 
         let configSession = this.agentSessions.get(configSessionId);
@@ -155,7 +160,7 @@ export class TelegramBridge {
           try {
             fullResponse = await handleAgentStream({
               session: configSession as AgentSession,
-              sendTyping: async () => { try { await this.bot!.sendChatAction(chatId, "typing"); } catch {} },
+              sendTyping: async () => { try { await this.bot!.api.sendChatAction({ chat_id: chatId, action: "typing" }); } catch {} },
               sendText: async (text) => { await this.safeSend(chatId, text); },
               maxMsgLen: MAX_MSG_LEN,
             });
@@ -188,8 +193,15 @@ export class TelegramBridge {
       this.chatLocks.set(chatId, processPromise.catch(() => {}));
     });
 
-    this.bot.on("polling_error", (err) => {
-      console.error("[Telegram] Polling error:", err.message);
+    // Error boundary: a handler error is logged and the update is consumed,
+    // so polling never stops on a single failure.
+    this.bot.catch((err) => {
+      console.error("[Telegram] Bot error:", err instanceof Error ? err.message : String(err));
+    });
+
+    // Start the long-poll loop (2.x requires an explicit start; v0.x auto-started).
+    this.bot.startPolling().catch((err) => {
+      console.error("[Telegram] Polling stopped:", err instanceof Error ? err.message : String(err));
     });
 
     console.log("[Telegram] Bridge started, polling for messages");
@@ -202,7 +214,7 @@ export class TelegramBridge {
   private async processAgentMessage(
     chatId: string,
     text: string,
-    msg: TelegramBot.Message,
+    msg: Message,
     botUsername: string,
     botId: number,
   ) {
@@ -238,7 +250,7 @@ export class TelegramBridge {
 
       // Show typing indicator
       try {
-        await this.bot!.sendChatAction(chatId, "typing");
+        await this.bot!.api.sendChatAction({ chat_id: chatId, action: "typing" });
       } catch {
         // non-fatal
       }
@@ -258,7 +270,7 @@ export class TelegramBridge {
       // CliSession (codex/gemini/opencode): one-shot execute
       if (agentSession instanceof CliSession) {
         try {
-          await this.bot!.sendChatAction(chatId, "typing");
+          await this.bot!.api.sendChatAction({ chat_id: chatId, action: "typing" });
           const output = await agentSession.execute(text);
           const reply = output || "(no response)";
           this.store.addMessage(sessionId, { role: "assistant", content: reply });
@@ -284,7 +296,7 @@ export class TelegramBridge {
       try {
         fullResponse = await handleAgentStream({
           session: agentSession as AgentSession,
-          sendTyping: async () => { try { await this.bot!.sendChatAction(chatId, "typing"); } catch {} },
+          sendTyping: async () => { try { await this.bot!.api.sendChatAction({ chat_id: chatId, action: "typing" }); } catch {} },
           sendText: async (text) => { await this.safeSend(chatId, text); },
           maxMsgLen: MAX_MSG_LEN,
           recentMessages: recentMsgs,
@@ -330,9 +342,10 @@ export class TelegramBridge {
 
   stop() {
     if (this.bot) {
-      this.bot.stopPolling();
+      this.bot.stop();
       this.bot = null;
     }
+    this.token = "";
     for (const session of this.agentSessions.values()) {
       if (session instanceof AgentSession) session.interrupt();
       else if (session instanceof CliSession) session.abort();
@@ -370,7 +383,7 @@ export class TelegramBridge {
    * Handle media in a Telegram message (photo, document, video, audio, voice).
    * Downloads the file to workspace/media/ and returns context text for the agent.
    */
-  private async handleMedia(msg: TelegramBot.Message): Promise<string> {
+  private async handleMedia(msg: Message): Promise<string> {
     if (!this.bot) return "";
 
     const mediaDir = path.join(process.env.AGENT_ROOT || AGENT_ROOT, "workspace", "media");
@@ -451,7 +464,7 @@ export class TelegramBridge {
     originalName?: string
   ): Promise<string> {
     try {
-      const fileInfo = await this.bot!.getFile(fileId);
+      const fileInfo = await this.bot!.api.getFile({ file_id: fileId });
       if (!fileInfo.file_path) return "";
 
       const ext = path.extname(fileInfo.file_path) || path.extname(originalName || "") || "";
@@ -460,7 +473,7 @@ export class TelegramBridge {
         : `${prefix}-${Date.now()}${ext}`;
       const localPath = path.join(mediaDir, safeName);
 
-      const fileUrl = `https://api.telegram.org/file/bot${(this.bot as any).token}/${fileInfo.file_path}`;
+      const fileUrl = `https://api.telegram.org/file/bot${this.token}/${fileInfo.file_path}`;
 
       await new Promise<void>((resolve, reject) => {
         const file = fs.createWriteStream(localPath);
@@ -483,7 +496,7 @@ export class TelegramBridge {
 
   public async safeSend(chatId: string, text: string): Promise<void> {
     try {
-      await this.bot!.sendMessage(chatId, text);
+      await this.bot!.api.sendMessage({ chat_id: chatId, text });
     } catch (err) {
       console.error(
         `[Telegram] Failed to send message to ${chatId}:`,

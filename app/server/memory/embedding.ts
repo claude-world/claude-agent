@@ -1,12 +1,12 @@
 /**
  * Embedding functions for semantic memory search.
- * Three-tier fallback: Xenova local model → TF-IDF
+ * Two-tier fallback: local transformer model → TF-IDF
  */
 
 import type { EmbeddingFunction } from "./types.ts";
 
 /**
- * Tier 1: @xenova/transformers — local, offline, no API cost.
+ * Tier 1: @huggingface/transformers — local, offline, no API cost.
  * Downloads model on first use (~80MB to ~/.cache/huggingface/)
  */
 class XenovaEmbedding implements EmbeddingFunction {
@@ -22,9 +22,9 @@ class XenovaEmbedding implements EmbeddingFunction {
     this.loading = true;
     this.loadPromise = (async () => {
       try {
-        const { pipeline } = await import("@xenova/transformers");
+        const { pipeline } = await import("@huggingface/transformers");
         this.pipeline = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
-          quantized: true,
+          dtype: "q8",
         });
         this.loading = false;
         return this.pipeline;
@@ -97,8 +97,8 @@ export async function getEmbedder(): Promise<EmbeddingFunction> {
 
   embedderPromise = (async () => {
     try {
-      // Test if @xenova/transformers is available
-      await import("@xenova/transformers");
+      // Test if @huggingface/transformers is available
+      await import("@huggingface/transformers");
       const embedder = new XenovaEmbedding();
       // Warm up with a test embedding (downloads model if needed)
       await embedder.embed(["test"]);
@@ -106,7 +106,7 @@ export async function getEmbedder(): Promise<EmbeddingFunction> {
       cachedEmbedder = embedder;
       return embedder;
     } catch {
-      console.log("[Embedder] @xenova/transformers unavailable, using TF-IDF fallback (256-dim)");
+      console.log("[Embedder] @huggingface/transformers unavailable, using TF-IDF fallback (256-dim)");
       cachedEmbedder = new TfIdfEmbedding();
       return cachedEmbedder;
     }

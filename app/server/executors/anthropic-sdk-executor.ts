@@ -22,7 +22,7 @@ export class AnthropicSdkExecutor implements IExecutor {
 
   constructor(config: ExecutorConfig) {
     this.executorId = config.sessionId;
-    this.model = config.model || "claude-sonnet-4-6";
+    this.model = config.model || "claude-sonnet-5-5";
     this.apiKey = config.apiKey || process.env.ANTHROPIC_API_KEY || "";
     this.systemPrompt = config.systemPrompt || "";
   }
